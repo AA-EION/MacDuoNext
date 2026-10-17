@@ -1,0 +1,64 @@
+# CI: build, test and package on real macOS runners.
+#
+# MacDuoNext only builds on macOS (Metal, Vision, ScreenCaptureKit, IOKit).
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["v*"]  # release.yml handles tags
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Select the newest Xcode
+        run: |
+          latest="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "${latest}"
+          xcodebuild -version
+          swift --version
+
+      - name: Unit tests
+        run: swift test
+
+      - name: Universal app, DMG and ZIP (ad-hoc signed)
+        env:
+          MACDUONEXT_BUILD_NUMBER: ${{ github.run_number }}
+        run: ./scripts/build-release.sh --no-test
+
+      - name: Check the shaders compile for this GPU
+        run: |
+          # The engine compiles its Metal source at launch; compile it here too
+          # so a shader error fails CI instead of a user's first close.
+          python3 scripts/extract-shaders.py Sources/MacDuoNextEngine/GlassShaders.swift > "$RUNNER_TEMP/glass.metal"
+          for rt in 0 1; do
+            xcrun -sdk macosx metal -std=metal3.0 -DUSE_RAYTRACING=$rt -c "$RUNNER_TEMP/glass.metal" -o "$RUNNER_TEMP/glass-$rt.air"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MacDuoNext-${{ github.sha }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 14

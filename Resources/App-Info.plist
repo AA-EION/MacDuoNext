@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Info.plist template for MacDuoNext.app.
+
+  scripts/build-release.sh replaces __MACDUONEXT_VERSION__ and
+  __MACDUONEXT_BUILD__ and copies it into MacDuoNext.app/Contents/.
+
+  The camera is used only for head tracking, and only while the lid is
+  closed past the start angle; MacDuoNext.entitlements grants it under the
+  hardened runtime.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>MacDuoNext</string>
+	<key>CFBundleDisplayName</key>
+	<string>MacDuoNext</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.macduonext.app</string>
+	<key>CFBundleExecutable</key>
+	<string>MacDuoNext</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__MACDUONEXT_VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__MACDUONEXT_BUILD__</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Issen Software Group. Based on Mac Duo © 2026 Makito. Apache License 2.0.</string>
+
+	<!-- Every case of SettingsLanguage must be listed here, or the System
+	     language option cannot pick it (see SettingsLanguageTests). -->
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>es</string>
+		<string>zh-Hans</string>
+	</array>
+
+	<key>NSCameraUsageDescription</key>
+	<string>MacDuoNext uses the camera to follow your head while the lid is closing, so the screen looks like it stays in place. Faces are found on this Mac; video is never saved or sent anywhere.</string>
+
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<!-- A menu bar app: no Dock icon. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

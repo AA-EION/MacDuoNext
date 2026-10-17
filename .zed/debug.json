@@ -1,34 +1,34 @@
 [
   {
-    "label": "Debug lidprobe",
+    "label": "Debug macduonext-lidprobe",
     "adapter": "Swift",
     "request": "launch",
-    "program": "$ZED_WORKTREE_ROOT/.build/debug/lidprobe",
+    "program": "$ZED_WORKTREE_ROOT/.build/debug/macduonext-lidprobe",
     "cwd": "$ZED_WORKTREE_ROOT",
-    "build": "swift: Build Debug lidprobe"
+    "build": "swift: Build Debug macduonext-lidprobe"
   },
   {
-    "label": "Release lidprobe",
+    "label": "Release macduonext-lidprobe",
     "adapter": "Swift",
     "request": "launch",
-    "program": "$ZED_WORKTREE_ROOT/.build/release/lidprobe",
+    "program": "$ZED_WORKTREE_ROOT/.build/release/macduonext-lidprobe",
     "cwd": "$ZED_WORKTREE_ROOT",
-    "build": "swift: Build Release lidprobe"
+    "build": "swift: Build Release macduonext-lidprobe"
   },
   {
-    "label": "Debug MacDuo",
+    "label": "Debug MacDuoNextApp",
     "adapter": "Swift",
     "request": "launch",
-    "program": "$ZED_WORKTREE_ROOT/.build/debug/MacDuo",
+    "program": "$ZED_WORKTREE_ROOT/.build/debug/MacDuoNextApp",
     "cwd": "$ZED_WORKTREE_ROOT",
-    "build": "swift: Build Debug MacDuo"
+    "build": "swift: Build Debug MacDuoNextApp"
   },
   {
-    "label": "Release MacDuo",
+    "label": "Release MacDuoNextApp",
     "adapter": "Swift",
     "request": "launch",
-    "program": "$ZED_WORKTREE_ROOT/.build/release/MacDuo",
+    "program": "$ZED_WORKTREE_ROOT/.build/release/MacDuoNextApp",
     "cwd": "$ZED_WORKTREE_ROOT",
-    "build": "swift: Build Release MacDuo"
+    "build": "swift: Build Release MacDuoNextApp"
   }
 ]

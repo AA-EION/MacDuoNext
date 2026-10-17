@@ -1,29 +1,29 @@
 [
   {
-    "label": "swift: Build Debug lidprobe",
+    "label": "swift: Build Debug macduonext-lidprobe",
     "command": "swift",
-    "args": ["build", "--configuration", "debug", "--product", "lidprobe"],
+    "args": ["build", "--configuration", "debug", "--product", "macduonext-lidprobe"],
     "use_new_terminal": false,
     "allow_concurrent_runs": true
   },
   {
-    "label": "swift: Build Release lidprobe",
+    "label": "swift: Build Release macduonext-lidprobe",
     "command": "swift",
-    "args": ["build", "--configuration", "release", "--product", "lidprobe"],
+    "args": ["build", "--configuration", "release", "--product", "macduonext-lidprobe"],
     "use_new_terminal": false,
     "allow_concurrent_runs": true
   },
   {
-    "label": "swift: Build Debug MacDuo",
+    "label": "swift: Build Debug MacDuoNextApp",
     "command": "swift",
-    "args": ["build", "--configuration", "debug", "--product", "MacDuo"],
+    "args": ["build", "--configuration", "debug", "--product", "MacDuoNextApp"],
     "use_new_terminal": false,
     "allow_concurrent_runs": true
   },
   {
-    "label": "swift: Build Release MacDuo",
+    "label": "swift: Build Release MacDuoNextApp",
     "command": "swift",
-    "args": ["build", "--configuration", "release", "--product", "MacDuo"],
+    "args": ["build", "--configuration", "release", "--product", "MacDuoNextApp"],
     "use_new_terminal": false,
     "allow_concurrent_runs": true
   }

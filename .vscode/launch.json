@@ -4,41 +4,41 @@
 			"type": "swift",
 			"request": "launch",
 			"args": [],
-			"cwd": "${workspaceFolder:Mac-Duo}",
-			"name": "Debug lidprobe",
-			"target": "lidprobe",
+			"cwd": "${workspaceFolder:MacDuoNext}",
+			"name": "Debug macduonext-lidprobe",
+			"target": "macduonext-lidprobe",
 			"configuration": "debug",
-			"preLaunchTask": "swift: Build Debug lidprobe"
+			"preLaunchTask": "swift: Build Debug macduonext-lidprobe"
 		},
 		{
 			"type": "swift",
 			"request": "launch",
 			"args": [],
-			"cwd": "${workspaceFolder:Mac-Duo}",
-			"name": "Release lidprobe",
-			"target": "lidprobe",
+			"cwd": "${workspaceFolder:MacDuoNext}",
+			"name": "Release macduonext-lidprobe",
+			"target": "macduonext-lidprobe",
 			"configuration": "release",
-			"preLaunchTask": "swift: Build Release lidprobe"
+			"preLaunchTask": "swift: Build Release macduonext-lidprobe"
 		},
 		{
 			"type": "swift",
 			"request": "launch",
 			"args": [],
-			"cwd": "${workspaceFolder:Mac-Duo}",
-			"name": "Debug MacDuo",
-			"target": "MacDuo",
+			"cwd": "${workspaceFolder:MacDuoNext}",
+			"name": "Debug MacDuoNextApp",
+			"target": "MacDuoNextApp",
 			"configuration": "debug",
-			"preLaunchTask": "swift: Build Debug MacDuo"
+			"preLaunchTask": "swift: Build Debug MacDuoNextApp"
 		},
 		{
 			"type": "swift",
 			"request": "launch",
 			"args": [],
-			"cwd": "${workspaceFolder:Mac-Duo}",
-			"name": "Release MacDuo",
-			"target": "MacDuo",
+			"cwd": "${workspaceFolder:MacDuoNext}",
+			"name": "Release MacDuoNextApp",
+			"target": "MacDuoNextApp",
 			"configuration": "release",
-			"preLaunchTask": "swift: Build Release MacDuo"
+			"preLaunchTask": "swift: Build Release MacDuoNextApp"
 		}
 	]
 }
