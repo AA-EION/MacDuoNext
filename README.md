@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Close your MacBook's lid and the screen stays where it was.</b><br>
-  A ray-traced glass effect that follows your head, all on your Mac.
+  The screen stays behind, under frosted glass, and follows your head. All on your Mac.
 </p>
 
 <p align="center">
@@ -25,20 +25,17 @@
 
 Fold an iPhone Duo-style phone and the picture seems to stay put while the
 glass moves. MacDuoNext brings that to the MacBook lid. As you close the lid
-past a set angle, what was on screen stays standing where the screen used to
-be, under a sheet of real-looking cover glass. It blurs and darkens as the
-lid comes down, and it follows your head so the picture holds still in the
-room.
+past a set angle, the screen is left behind: it stays exactly as it was,
+standing where it stood, on an endless black plane. The real display becomes
+a pane of frosted glass that folds down in front of it.
 
-- **A real 3D scene.** The screen becomes a display panel under a slab of
-  glass with rounded corners and a polished, rolled edge. Each frame is ray
-  traced: light refracts through the glass, reflects off it (more strongly at
-  grazing angles, as real glass does), and picks up a faint green tint along
-  the edges.
-- **Uses the ray tracing hardware in Apple silicon.** The glass sits in a
-  Metal acceleration structure, so M3 and later Macs trace it in hardware.
-  Earlier Apple silicon traces it on the GPU, and Intel Macs get an analytic
-  version of the same glass.
+- **A real 3D scene.** Every pixel is a ray from your eye, through the frosted
+  pane of the real screen, to the left-behind screen. The captured screen is
+  never blurred or dimmed itself. Everything you see happen to it is the glass:
+  what lies close behind the pane stays sharp, and what falls further behind
+  it, like the top of the screen as the lid comes down, spreads into a soft
+  glow and loses its light. The frost's grain and the pane's reflections stay
+  on the real screen.
 - **Head tracking.** While the lid is closing, the built-in camera finds your
   face and the picture is drawn from where your eyes actually are, so it looks
   frozen in place. If you step away, it holds for a moment and then drifts back
@@ -48,7 +45,8 @@ room.
   your Mac.
 - **Light on battery.** The camera turns on only once the lid passes the
   start angle and turns off when it closes. The GPU only draws while the
-  effect is on screen.
+  effect is on screen, in step with the display, and skips frames where
+  nothing changed.
 - **Lives in the menu bar**, with a System Settings-style panel.
 - **Interface in 3 languages:** English, Spanish and Simplified Chinese.
 
@@ -58,8 +56,8 @@ room.
 
 > **MacDuoNext** is made by [**Issen Software Group**](https://issen.kurokamicorp.com/). It is a fork of
 > [Mac Duo](https://github.com/sumimakito/Mac-Duo) by Makito, which wrote the original lid
-> sensor reader, screen capture pipeline and depth effect. MacDuoNext rebuilds the effect on a
-> ray-traced 3D engine, adds head tracking and a new settings panel, and ships under its own
+> sensor reader, screen capture pipeline and depth effect. MacDuoNext rebuilds the effect as a
+> 3D scene behind frosted glass, adds head tracking and a new settings panel, and ships under its own
 > name and bundle identifier. See [NOTICE.md](NOTICE.md).
 
 ---
@@ -108,10 +106,9 @@ Click the menu bar icon for the panel:
 |---|---|
 | **Effect** | Turn the effect on or off, and choose between a live picture and the frame from when it started |
 | **Head Tracking** | Turn tracking on or off, grant camera access, and see what the tracker is doing |
-| **Glass** | Turn the glass on or off, and set how much of the room it reflects |
-| **Start** | Start angle, how far to close for the full effect, and an optional timeout |
-| **Look** | Blur and dimming strength and spread |
-| **Perspective** | How far the picture leans back, and the viewing distance used when no face is tracked |
+| **Glass** | Frosted or clear glass; how much it scatters, how quickly what falls behind it goes dark, the most blur, and its reflections |
+| **Start** | Start angle and an optional timeout |
+| **Perspective** | How far the left-behind screen leans back, and the viewing distance used when no face is tracked |
 
 **Preview** at the bottom plays the effect once without moving the lid.
 
@@ -159,9 +156,10 @@ camera and the GPU work only while the effect is on screen.
 No. The geometry assumes the camera sits in the lid above the screen, which is what lets it
 cancel out the lid's own movement.
 
-**Why does the picture blur?**
-It's meant to look like a screen leaning away from you, the way the iPhone Duo effect does.
-You can turn the blur down, or off, in **Look**.
+**Why does the picture blur and darken?**
+That's the frosted glass: the further the left-behind screen falls behind the pane, the more
+the glass scatters it and the more light it loses. Set **Frost** and **Light loss** under
+**Glass**, or turn the frost off for clear glass.
 
 ---
 
@@ -169,11 +167,11 @@ You can turn the blur down, or off, in **Look**.
 
 ```
  lid sensor ──▶ LidController ──▶ effect policy ──▶ GlassOverlay ──▶ GlassRenderer (Metal)
-   (IOKit)          │                                    ▲                │
-                    │                                    │                ├─ acceleration structure
- camera ──▶ FaceTracker ──▶ eye estimate ──▶ viewpoint ──┘                │  (glass slab mesh)
- (Vision,      (lid-angle-compensated)       (1€ filter,                  └─ ray traced kernel
-  Neural Engine)                              slow return)                    + present pass
+   (IOKit)       (angle predicted                         ▲          one ray per pixel:
+                  to display time)                        │          eye → frosted pane → plane
+ camera ──▶ FaceTracker ──▶ eye estimate ──▶ viewpoint ───┘
+ (Vision,      (lid-angle-compensated)       (1€ filter, prediction,
+  Neural Engine)                              slow return)
 ```
 
 - **Sensor.** The lid angle is read from the built-in HID hinge sensor and kept in a short
@@ -188,10 +186,13 @@ You can turn the blur down, or off, in **Look**.
   lid angle predict where your face will appear in the next frame, and the detector searches
   there first.
 - **Rendering.** For every pixel, a ray goes from your eye through that point of the real
-  screen and on into the room: into the glass slab, refracting, partly reflecting, and onto
-  the frozen panel. The panel is a mipmapped Gaussian pyramid, so the blur is one sample.
-  At the start angle the glass fades out completely, so the overlay appears and disappears
-  without a visible seam.
+  screen, which is the frosted pane, and on to the plane the screen was left on. The distance
+  between the two along the ray sets how widely the frost scatters the picture and how much
+  light is lost. At the start angle that distance is zero everywhere, so the overlay appears
+  and disappears without a seam. The picture is a Gaussian pyramid, so a frosted sample of
+  any width is eight jittered taps. Frames are presented in step with the display from a
+  `CAMetalDisplayLink`, with the lid angle and the head predicted for the moment each frame
+  lights up, and dithered so gradients don't band.
 
 ---
 
@@ -224,8 +225,8 @@ export MACDUONEXT_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 | Target | What it is |
 |---|---|
 | `MacDuoNextLidKit` | Lid angle sensor (IOKit HID) |
-| `MacDuoNextCore` | Geometry, glass mesh, effect policy, eye estimation, viewpoint control. Uses no Apple frameworks, so it is fully unit tested. |
-| `MacDuoNextEngine` | Metal engine: acceleration structure, ray-traced kernel, analytic fallback |
+| `MacDuoNextCore` | Geometry, lid angle prediction, effect policy, eye estimation, viewpoint control. Uses no Apple frameworks, so it is fully unit tested. |
+| `MacDuoNextEngine` | Metal engine: the frosted-glass kernel and the picture pyramid |
 | `MacDuoNextVision` | Camera and face detection |
 | `MacDuoNextApp` | The menu bar app |
 | `macduonext-lidprobe` | Sensor diagnostic tool |

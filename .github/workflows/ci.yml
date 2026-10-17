@@ -50,14 +50,12 @@ jobs:
           MACDUONEXT_BUILD_NUMBER: ${{ github.run_number }}
         run: ./scripts/build-release.sh --no-test
 
-      - name: Check the shaders compile for this GPU
+      - name: Check the shaders compile
         run: |
           # The engine compiles its Metal source at launch; compile it here too
           # so a shader error fails CI instead of a user's first close.
           python3 scripts/extract-shaders.py Sources/MacDuoNextEngine/GlassShaders.swift > "$RUNNER_TEMP/glass.metal"
-          for rt in 0 1; do
-            xcrun -sdk macosx metal -std=metal3.0 -DUSE_RAYTRACING=$rt -c "$RUNNER_TEMP/glass.metal" -o "$RUNNER_TEMP/glass-$rt.air"
-          done
+          xcrun -sdk macosx metal -std=metal3.0 -c "$RUNNER_TEMP/glass.metal" -o "$RUNNER_TEMP/glass.air"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -11,8 +11,13 @@
 
 A menu bar app. When the MacBook lid closes past a start angle, a borderless
 overlay window covers the built-in display and draws the screen as it was,
-standing where the screen stood, under ray-traced cover glass, viewed from the
-viewer's tracked eye.
+left standing where the screen stood on an endless black plane, seen through
+the real screen as a pane of frosted glass, from the viewer's tracked eye.
+
+**The captured picture is never altered.** Blur, light loss, grain and
+reflections all belong to the simulated glass of the real screen; the blur and
+loss come from the distance behind the pane along each ray. Do not add effects
+that act on the picture directly (by height, by progress); the user rejected that.
 
 ## 2. Targets and dependency direction
 
@@ -33,7 +38,7 @@ with the `simd` module.
 - **World**: screen points. Hinge along x through the origin, y up, z towards the
   viewer. Lid at angle θ: `y = (0, sin θ, cos θ)`, `z = (0, −cos θ, sin θ)`.
 - **Screen / model**: x right, y up, points from the bottom-left pixel; model z
-  leaves the glass. The picture panel is the slab's back face at z = 0.
+  leaves the screen. The left-behind picture lies at model z = 0.
 - **Camera**: millimetres; x is the camera picture's right, i.e. world −x
   (frames are unmirrored, `FaceTracker` forces it). y up the picture, z along the
   optical axis = lid z.
@@ -44,13 +49,13 @@ with the `simd` module.
 
 | Invariant | Why |
 |---|---|
-| At the start angle the rendered frame equals the screen | The overlay fades in and out over the real screen; the glass amount ramps from 0 (`GlassOverlay.glassRampProgress`) and the straight-ray sample is exact. |
+| At the start angle the rendered frame equals the screen | The overlay fades in and out over the real screen; the distance behind the pane is 0 there, and the pane's sheen and grain ramp in over `GlassOverlay.surfaceRampDegrees`. |
 | The camera runs only while the effect is active and the lid is above `CameraSchedule.closedAngle` | Privacy and battery; the user asked for polling to start only past the threshold. |
 | Camera permission is requested only from the panel | A prompt must never appear under the effect. |
 | A face sighting is placed with the lid angle at its capture time (`LidAngleHistory`) | The camera rides on the lid; using the current angle reads lid motion as head motion. |
 | A lost face holds `holdDuration`, then returns with `returningFrequency` (~11 s settle) | "As slow as possible" return to centre, without overshoot. |
 | Reduce Motion disables head tracking | Apple HIG: reduce parallax. |
-| The shader source is a Swift string compiled at runtime, twice (`USE_RAYTRACING` 1/0) | CI compiles both with `xcrun metal` via `scripts/extract-shaders.py`; keep backslashes out of it. |
+| The shader source is a Swift string compiled at runtime | CI compiles it with `xcrun metal` via `scripts/extract-shaders.py`; keep backslashes out of it. |
 | `GlassUniforms` is all `float4` | Layout cannot drift between Swift and MSL. |
 
 ## 5. Verified facts
@@ -60,8 +65,10 @@ with the `simd` module.
 - The hinge sensor refreshes at ~10 Hz. Draw at the angle predicted for the frame's
   presentation time (`LidAnglePredictor`), or the held picture trails the lid and
   looks attached to it instead of to the room.
-- Keep ray tracing out of the per-pixel kernel: an intersector in a kernel raises its
-  register use for every thread. The edge band goes through an indirect pass.
+- A ray-traced glass slab inside the virtual scene was tried and dropped: it moved
+  with head tracking (the glass must stay on the real screen), its edge absorption
+  showed as a green border, and an intersector in the per-pixel kernel costs every
+  thread registers. The frosted pane on the real screen needs only a ray-plane hit.
 
 - Vision ships a struct `FaceObservation` on macOS 15+; ours is `FaceSighting`.
 - `VNRequest.supportedComputeStageDevices` is a throwing **property** (macOS 14+).

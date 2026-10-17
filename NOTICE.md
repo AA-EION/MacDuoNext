@@ -9,7 +9,7 @@ It is a fork of **Mac Duo** by Makito (<https://github.com/sumimakito/Mac-Duo>),
 licensed under the Apache License 2.0. The lid angle sensor reader, the
 screen capture pipeline, the effect policy and the original depth effect come
 from Mac Duo. Issen Software Group modified those files and added the
-ray-traced glass engine, head tracking, the new settings panel, the Spanish
+frosted-glass 3D engine, head tracking, the new settings panel, the Spanish
 translation and the release tooling.
 
 "Mac Duo" is the name of the original project. Using it here only credits

@@ -258,7 +258,7 @@ final class LidController: ObservableObject {
                 preferences.thresholdAngle + preferences.hysteresis + 5,
                 min(preferences.thresholdAngle + 35, 130)
             ),
-            shut: max(preferences.thresholdAngle - preferences.blurSpan * 1.15, 5)
+            shut: max(preferences.thresholdAngle - 55, 5)
         )
         setPollInterval(Self.activePollInterval)
     }
@@ -636,11 +636,6 @@ final class LidController: ObservableObject {
         startDisplayLink()
     }
 
-    private func blurProgress(for angle: Double) -> Double {
-        let span = max(preferences.blurSpan, 1)
-        return min(max((preferences.thresholdAngle - angle) / span, 0), 1)
-    }
-
     // MARK: - Animation
 
     /// Drives drawing from a Metal display link on the overlay's layer. It
@@ -719,20 +714,18 @@ final class LidController: ObservableObject {
 
     /// The geometry takes the lid angle itself, so only the blur saturates.
     private func applyVisual(angle: Double, drawable: CAMetalDrawable? = nil) {
-        let progress = blurProgress(for: angle)
-        overlay.update(progress: progress, currentAngle: angle, eye: viewpoint.eye, tuning: tuning, drawable: drawable)
+        overlay.update(currentAngle: angle, eye: viewpoint.eye, tuning: tuning, drawable: drawable)
     }
 
     private var tuning: DepthTuning {
         DepthTuning(
             viewingDistance: preferences.viewingDistance,
             recession: preferences.recession,
-            blurEvenness: preferences.blurEvenness,
-            dimReach: preferences.dimReach,
+            isGlassEnabled: preferences.isGlassEnabled,
+            frost: preferences.frost,
+            lightLoss: preferences.lightLoss,
             maxBlurRadius: preferences.maxBlurRadius,
-            maxDim: preferences.maxDim,
-            glass: preferences.isGlassEnabled ? preferences.glassReflections : 0,
-            frost: preferences.frost
+            reflections: preferences.glassReflections
         )
     }
 
@@ -744,9 +737,6 @@ final class LidController: ObservableObject {
         preferences.isHeadTrackingEnabled
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
-
-    /// How the glass is drawn on this Mac, for the panel.
-    var renderPath: String { overlay.renderPath }
 
     func refreshCameraAuthorization() {
         cameraAuthorization = FaceTracker.authorization

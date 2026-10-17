@@ -51,7 +51,6 @@ struct SettingsView: View {
                     headTrackingSection
                     glassSection
                     startSection
-                    lookSection
                     perspectiveSection
                     appSection
                 }
@@ -224,13 +223,23 @@ struct SettingsView: View {
     private var glassSection: some View {
         Section {
             Toggle(isOn: $preferences.isGlassEnabled) {
-                Text(localized("Glass"))
-                Text(localized("Draws the picture under ray-traced frosted glass."))
+                Text(localized("Frosted glass"))
+                Text(localized("The screen stays where it was, behind a pane of frosted glass that folds down with the lid."))
             }
             slider(
                 localized("Frost"), value: $preferences.frost, in: 0...1,
                 format: "%.0f%%", scale: 100,
-                help: localized("How rough the glass gets as the lid closes.")
+                help: localized("How much the glass scatters what lies behind it.")
+            )
+            .disabled(!preferences.isGlassEnabled)
+            slider(
+                localized("Light loss"), value: $preferences.lightLoss, in: 0...1,
+                format: "%.0f%%", scale: 100,
+                help: localized("How quickly what falls behind the glass goes dark.")
+            )
+            .disabled(!preferences.isGlassEnabled)
+            slider(
+                localized("Most blur"), value: $preferences.maxBlurRadius, in: 10...160, format: "%.0f pt"
             )
             .disabled(!preferences.isGlassEnabled)
             slider(
@@ -240,10 +249,6 @@ struct SettingsView: View {
             .disabled(!preferences.isGlassEnabled)
         } header: {
             Text(localized("Glass"))
-        } footer: {
-            Text(String(format: localized("Rendering: %@"), localized(controller.renderPath)))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .disabled(!preferences.isEnabled)
     }
@@ -257,32 +262,6 @@ struct SettingsView: View {
             slider(
                 localized("Start angle"), value: $preferences.thresholdAngle, in: 5...130, format: "%.0f°",
                 help: localized("The effect starts at this angle.")
-            )
-            slider(
-                localized("Full effect after"), value: $preferences.blurSpan, in: 5...60, format: "%.0f°",
-                help: localized("Degrees of further closing to reach full strength.")
-            )
-        }
-        .disabled(!preferences.isEnabled)
-    }
-
-    private var lookSection: some View {
-        Section(localized("Look")) {
-            slider(
-                localized("Blur"), value: $preferences.maxBlurRadius, in: 10...160, format: "%.0f pt",
-                help: localized("Blur radius at the far edge.")
-            )
-            slider(
-                localized("Blur spread"), value: $preferences.blurEvenness, in: 0...1, format: "%.0f%%", scale: 100,
-                help: localized("0 blurs the far edge only, 100 the whole picture.")
-            )
-            slider(
-                localized("Dimming"), value: $preferences.maxDim, in: 0...1, format: "%.0f%%", scale: 100,
-                help: localized("How dark the far edge goes.")
-            )
-            slider(
-                localized("Dimming spread"), value: $preferences.dimReach, in: 0.2...1, format: "%.0f%%", scale: 100,
-                help: localized("Everything above this height goes fully dark.")
             )
         }
         .disabled(!preferences.isEnabled)

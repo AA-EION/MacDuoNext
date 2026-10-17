@@ -10,25 +10,21 @@ final class Preferences: ObservableObject {
         static let isEnabled = "isEnabled"
         static let isTimeoutEnabled = "isTimeoutEnabled"
         static let thresholdAngle = "thresholdAngle"
-        static let blurSpan = "blurSpan"
         static let maxBlurRadius = "maxBlurRadius"
-        static let maxDim = "maxDim"
         static let viewingDistance = "viewingDistance"
         static let recession = "recession"
-        static let blurEvenness = "blurEvenness"
-        static let dimReach = "dimReach"
         static let showsAngleInMenuBar = "showsAngleInMenuBar"
         static let isLivePicture = "isLivePicture"
         static let isHeadTrackingEnabled = "isHeadTrackingEnabled"
         static let isGlassEnabled = "isGlassEnabled"
         static let glassReflections = "glassReflections"
         static let frost = "frost"
+        static let lightLoss = "lightLoss"
 
         static let all = [
-            isEnabled, isTimeoutEnabled, thresholdAngle, blurSpan, maxBlurRadius,
-            maxDim, viewingDistance, recession, blurEvenness, dimReach,
-            showsAngleInMenuBar, isLivePicture, isHeadTrackingEnabled,
-            isGlassEnabled, glassReflections, frost,
+            isEnabled, isTimeoutEnabled, thresholdAngle, maxBlurRadius,
+            viewingDistance, recession, showsAngleInMenuBar, isLivePicture, isHeadTrackingEnabled,
+            isGlassEnabled, glassReflections, frost, lightLoss,
         ]
     }
 
@@ -36,22 +32,18 @@ final class Preferences: ObservableObject {
         Key.isEnabled: true,
         Key.isTimeoutEnabled: false,
         Key.thresholdAngle: 90.0,
-        Key.blurSpan: 60.0,
         Key.maxBlurRadius: 60.0,
-        // Enough to sink the far edge, never enough to put the picture out.
-        Key.maxDim: 0.35,
         // About 50 cm from a 14-inch panel: where people sit, so the
         // picture looks fixed even before the camera has found the face.
         Key.viewingDistance: 2.6,
         Key.recession: 1.0,
-        Key.blurEvenness: 0.0,
-        Key.dimReach: 0.9,
         Key.showsAngleInMenuBar: false,
         Key.isLivePicture: true,
         Key.isHeadTrackingEnabled: true,
         Key.isGlassEnabled: true,
         Key.glassReflections: 0.6,
         Key.frost: 0.75,
+        Key.lightLoss: 0.6,
     ]
 
     /// Master switch for the depth effect.
@@ -70,19 +62,9 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(thresholdAngle, forKey: Key.thresholdAngle) }
     }
 
-    /// How many degrees below the threshold the blur takes to reach maximum.
-    @Published var blurSpan: Double {
-        didSet { defaults.set(blurSpan, forKey: Key.blurSpan) }
-    }
-
-    /// Gaussian blur radius at full effect, in points.
+    /// The most the glass blurs, in points.
     @Published var maxBlurRadius: Double {
         didSet { defaults.set(maxBlurRadius, forKey: Key.maxBlurRadius) }
-    }
-
-    /// Black overlay opacity where the blur is at full strength, 0...1.
-    @Published var maxDim: Double {
-        didSet { defaults.set(maxDim, forKey: Key.maxDim) }
     }
 
     /// Distance from the eye to the middle of the screen, as a multiple of
@@ -95,18 +77,6 @@ final class Preferences: ObservableObject {
     /// closes. One holds the picture still in the room.
     @Published var recession: Double {
         didSet { defaults.set(recession, forKey: Key.recession) }
-    }
-
-    /// Blur at the hinge edge as a fraction of the blur at the far edge. One
-    /// blurs the whole picture by the same amount.
-    @Published var blurEvenness: Double {
-        didSet { defaults.set(blurEvenness, forKey: Key.blurEvenness) }
-    }
-
-    /// Height at which the dimming reaches full strength, as a fraction of
-    /// the screen height.
-    @Published var dimReach: Double {
-        didSet { defaults.set(dimReach, forKey: Key.dimReach) }
     }
 
     /// Draw the live angle next to the menu bar icon.
@@ -126,7 +96,8 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(isHeadTrackingEnabled, forKey: Key.isHeadTrackingEnabled) }
     }
 
-    /// Draw the held picture under ray-traced cover glass.
+    /// Put a pane of frosted glass, carried by the lid, between the viewer
+    /// and the left-behind screen. Off is clear glass.
     @Published var isGlassEnabled: Bool {
         didSet { defaults.set(isGlassEnabled, forKey: Key.isGlassEnabled) }
     }
@@ -140,6 +111,12 @@ final class Preferences: ObservableObject {
     /// frosted.
     @Published var frost: Double {
         didSet { defaults.set(frost, forKey: Key.frost) }
+    }
+
+    /// How much light is lost behind the glass, 0...1. At the default the
+    /// top of the left-behind screen is gone well before the lid shuts.
+    @Published var lightLoss: Double {
+        didSet { defaults.set(lightLoss, forKey: Key.lightLoss) }
     }
 
     /// Eye distance in screen heights, at the two ends of the perspective
@@ -166,6 +143,8 @@ final class Preferences: ObservableObject {
     /// Settings from earlier versions, removed at launch.
     private static let retired = [
         "blurFrontWidth", "maxTilt", "tiltDegrees", "tiltRatio", "dimEvenness",
+        // Effects once applied to the picture itself; the glass does it now.
+        "blurSpan", "maxDim", "blurEvenness", "dimReach",
     ]
 
     private let defaults = UserDefaults.standard
@@ -179,19 +158,16 @@ final class Preferences: ObservableObject {
         isEnabled = defaults.bool(forKey: Key.isEnabled)
         isTimeoutEnabled = defaults.bool(forKey: Key.isTimeoutEnabled)
         thresholdAngle = defaults.double(forKey: Key.thresholdAngle)
-        blurSpan = defaults.double(forKey: Key.blurSpan)
         maxBlurRadius = defaults.double(forKey: Key.maxBlurRadius)
-        maxDim = defaults.double(forKey: Key.maxDim)
         viewingDistance = defaults.double(forKey: Key.viewingDistance)
         recession = defaults.double(forKey: Key.recession)
-        blurEvenness = defaults.double(forKey: Key.blurEvenness)
-        dimReach = defaults.double(forKey: Key.dimReach)
         showsAngleInMenuBar = defaults.bool(forKey: Key.showsAngleInMenuBar)
         isLivePicture = defaults.bool(forKey: Key.isLivePicture)
         isHeadTrackingEnabled = defaults.bool(forKey: Key.isHeadTrackingEnabled)
         isGlassEnabled = defaults.bool(forKey: Key.isGlassEnabled)
         glassReflections = defaults.double(forKey: Key.glassReflections)
         frost = defaults.double(forKey: Key.frost)
+        lightLoss = defaults.double(forKey: Key.lightLoss)
     }
 
     func resetToDefaults() {
@@ -201,18 +177,15 @@ final class Preferences: ObservableObject {
         isEnabled = defaults.bool(forKey: Key.isEnabled)
         isTimeoutEnabled = defaults.bool(forKey: Key.isTimeoutEnabled)
         thresholdAngle = defaults.double(forKey: Key.thresholdAngle)
-        blurSpan = defaults.double(forKey: Key.blurSpan)
         maxBlurRadius = defaults.double(forKey: Key.maxBlurRadius)
-        maxDim = defaults.double(forKey: Key.maxDim)
         viewingDistance = defaults.double(forKey: Key.viewingDistance)
         recession = defaults.double(forKey: Key.recession)
-        blurEvenness = defaults.double(forKey: Key.blurEvenness)
-        dimReach = defaults.double(forKey: Key.dimReach)
         showsAngleInMenuBar = defaults.bool(forKey: Key.showsAngleInMenuBar)
         isLivePicture = defaults.bool(forKey: Key.isLivePicture)
         isHeadTrackingEnabled = defaults.bool(forKey: Key.isHeadTrackingEnabled)
         isGlassEnabled = defaults.bool(forKey: Key.isGlassEnabled)
         glassReflections = defaults.double(forKey: Key.glassReflections)
         frost = defaults.double(forKey: Key.frost)
+        lightLoss = defaults.double(forKey: Key.lightLoss)
     }
 }

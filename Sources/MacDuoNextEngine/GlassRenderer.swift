@@ -6,69 +6,63 @@ import QuartzCore
 
 /// Everything one frame needs to know about the room.
 public struct GlassFrame: Equatable {
-    /// The real screen, where the lid holds it now.
+    /// The real screen, where the lid holds it now: the frosted sheet.
     public var lid: Frame3
-    /// The held picture: the screen as it stood when the effect began.
+    /// The plane the picture was left on: the screen as it stood when the
+    /// effect began.
     public var picture: Frame3
     /// The viewer's eye, in world points.
     public var eye: Vector3
-    /// 0 draws the picture alone, exactly as the flat effect did; 1 draws it
-    /// fully under the glass.
-    public var glassAmount: Double
-    /// How bright the room around the glass is, 0...1.
-    public var environmentStrength: Double
-    /// How rough the pane is, 0 clear to 1 fully frosted.
-    public var frost: Double
-    public var blurStrength: Double
-    public var dimStrength: Double
-    public var blurFloor: Double
-    public var dimFloor: Double
-    public var dimReach: Double
+    /// How far the effect has come in, 0...1. Fades in the sheet's own
+    /// reflection and grain; the blur and light loss need no fade, since they
+    /// grow from nothing with the distance behind the sheet.
+    public var amount: Double
+    /// Points of blur for each point the plane lies behind the sheet.
+    public var scatter: Double
+    /// The most blur, in points.
     public var maxBlurRadius: Double
-    public var maxDim: Double
+    /// Light lost per screen height behind the sheet: the brightness falls
+    /// as `exp(-lightLoss * depth / screenHeight)`.
+    public var lightLoss: Double
+    /// How much the frost's milky veil fills in, 0...1.
+    public var haze: Double
+    /// Strength of the sheet's reflection, 0...1.
+    public var reflections: Double
+    /// Strength of the frost's fixed grain, 0...1.
+    public var grain: Double
 
     public init(
         lid: Frame3,
         picture: Frame3,
         eye: Vector3,
-        glassAmount: Double,
-        environmentStrength: Double,
-        frost: Double,
-        blurStrength: Double,
-        dimStrength: Double,
-        blurFloor: Double,
-        dimFloor: Double,
-        dimReach: Double,
+        amount: Double,
+        scatter: Double,
         maxBlurRadius: Double,
-        maxDim: Double
+        lightLoss: Double,
+        haze: Double,
+        reflections: Double,
+        grain: Double
     ) {
         self.lid = lid
         self.picture = picture
         self.eye = eye
-        self.glassAmount = glassAmount
-        self.environmentStrength = environmentStrength
-        self.frost = frost
-        self.blurStrength = blurStrength
-        self.dimStrength = dimStrength
-        self.blurFloor = blurFloor
-        self.dimFloor = dimFloor
-        self.dimReach = dimReach
+        self.amount = amount
+        self.scatter = scatter
         self.maxBlurRadius = maxBlurRadius
-        self.maxDim = maxDim
+        self.lightLoss = lightLoss
+        self.haze = haze
+        self.reflections = reflections
+        self.grain = grain
     }
 }
 
 /// The 3D engine behind the overlay.
 ///
 /// One compute pass draws every drawable pixel, already encoded and dithered,
-/// straight into the drawable; a second, indirect pass ray traces only the
-/// pixels the first one found on the glass's rounded edge. The picture sits
-/// on a black margin in one texture with a Gaussian pyramid over it, so blur
-/// is a single trilinear sample at any radius.
-///
-/// Ray tracing uses Metal's acceleration structures when the GPU supports
-/// them (all Apple silicon; M3 and later trace in hardware) and falls back to
-/// an analytic slab elsewhere.
+/// straight into the drawable: the ray from the eye through the frosted sheet
+/// of the real screen to the plane the picture was left on. The picture sits
+/// on a black margin in one texture with a Gaussian pyramid over it, so a
+/// frosted sample of any radius costs a handful of trilinear taps.
 @MainActor
 public final class GlassRenderer {
 
@@ -80,26 +74,18 @@ public final class GlassRenderer {
     /// blur radius, so the blur reaches real black on every side.
     nonisolated private static let paddingInPoints: CGFloat = 120
 
-    /// Glass index of refraction: soda-lime and aluminosilicate cover glass.
-    private static let indexOfRefraction: Float = 1.52
-
-    /// Widest the frost scatters the picture, in points.
-    private static let maxFrostRadiusInPoints: CGFloat = 22
-
     private struct Uniforms {
         var worldToModel0: SIMD4<Float>
         var worldToModel1: SIMD4<Float>
         var worldToModel2: SIMD4<Float>
-        var eyeAndGlass: SIMD4<Float>
+        var eyeAndAmount: SIMD4<Float>
         var lidOriginAndScale: SIMD4<Float>
         var lidAxisY: SIMD4<Float>
+        var lidNormal: SIMD4<Float>
         var screen: SIMD4<Float>
         var padded: SIMD4<Float>
-        var blur: SIMD4<Float>
-        var dim: SIMD4<Float>
-        var slab: SIMD4<Float>
-        var glass: SIMD4<Float>
         var frost: SIMD4<Float>
+        var surface: SIMD4<Float>
         var keyLight: SIMD4<Float>
     }
 
@@ -123,19 +109,7 @@ public final class GlassRenderer {
     nonisolated private let device: MTLDevice
     nonisolated private let queue: MTLCommandQueue
     private let tracer: MTLComputePipelineState
-    private let edgeArguments: MTLComputePipelineState
-    private let edgeTracer: MTLComputePipelineState
-    /// The edge list: a counter, the pixels, and the indirect dispatch.
-    private var edgeCount: MTLBuffer?
-    private var edgePixels: MTLBuffer?
-    private var edgeDispatch: MTLBuffer?
-    private var edgeCapacity = 0
     private let timing = FrameTiming()
-    /// True when the tracer walks an acceleration structure.
-    public let tracesRays: Bool
-    /// True on GPUs with ray tracing hardware (Apple family 9: M3 and later).
-    public let hasRayTracingHardware: Bool
-    private var scene: GlassScene?
 
     private var texture: MTLTexture?
     private var screenSize: CGSize = .zero
@@ -164,64 +138,26 @@ public final class GlassRenderer {
     /// A live frame or seed is waiting to be drawn.
     public var hasPendingPicture: Bool { pendingFrame != nil || pendingSeed != nil }
 
-    /// A short description of the path in use, for the log and the panel.
-    public var pathDescription: String {
-        if tracesRays {
-            return hasRayTracingHardware ? "hardware ray tracing" : "ray tracing"
-        }
-        return "analytic glass"
-    }
-
     public init?() {
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue() else { return nil }
         self.device = device
         self.queue = queue
-
-        var library: MTLLibrary?
-        var tracesRays = false
-        if device.supportsRaytracing {
-            library = Self.compile(device: device, rayTracing: true)
-            tracesRays = library != nil
-        }
-        if library == nil {
-            library = Self.compile(device: device, rayTracing: false)
-        }
-        guard let library,
-              let kernel = library.makeFunction(name: "glassKernel"),
-              let arguments = library.makeFunction(name: "edgeArguments"),
-              let edge = library.makeFunction(name: "edgeKernel") else {
-            EngineLog.render.error("glass shaders unavailable")
-            return nil
-        }
         do {
+            let options = MTLCompileOptions()
+            options.fastMathEnabled = true
+            let library = try device.makeLibrary(source: GlassShaders.source, options: options)
+            guard let kernel = library.makeFunction(name: "glassKernel") else {
+                EngineLog.render.error("glass kernel missing")
+                return nil
+            }
             tracer = try device.makeComputePipelineState(function: kernel)
-            edgeArguments = try device.makeComputePipelineState(function: arguments)
-            edgeTracer = try device.makeComputePipelineState(function: edge)
         } catch {
-            EngineLog.render.error("metal pipeline failed: \(String(describing: error), privacy: .public)")
+            EngineLog.render.error("glass shaders failed: \(String(describing: error), privacy: .public)")
             return nil
         }
-        self.tracesRays = tracesRays
-        hasRayTracingHardware = device.supportsFamily(.apple9)
-        EngineLog.render.notice(
-            "glass engine on \(device.name, privacy: .public): \(tracesRays ? "ray traced" : "analytic", privacy: .public), hardware RT \(device.supportsFamily(.apple9))"
-        )
+        EngineLog.render.notice("glass engine on \(device.name, privacy: .public)")
         configure(layer)
-    }
-
-    private static func compile(device: MTLDevice, rayTracing: Bool) -> MTLLibrary? {
-        let options = MTLCompileOptions()
-        options.preprocessorMacros = ["USE_RAYTRACING": NSNumber(value: rayTracing ? 1 : 0)]
-        options.fastMathEnabled = true
-        do {
-            return try device.makeLibrary(source: GlassShaders.source, options: options)
-        } catch {
-            EngineLog.render.error(
-                "glass shaders (ray tracing \(rayTracing)) failed: \(String(describing: error), privacy: .public)"
-            )
-            return nil
-        }
     }
 
     /// A fresh layer for a new overlay window. Later frames go to this one.
@@ -247,15 +183,6 @@ public final class GlassRenderer {
         // when they are free, so this never blocks the main thread.
         target.displaySyncEnabled = true
         target.needsDisplayOnBoundsChange = true
-    }
-
-    /// Builds the glass for a screen, unless it is already built.
-    public func prepareGlass(_ shape: GlassSlabMesh.Shape) {
-        guard scene?.shape != shape else { return }
-        scene = GlassScene(device: device, queue: queue, shape: shape, buildsAccelerationStructure: tracesRays)
-        if scene == nil {
-            EngineLog.render.error("glass scene could not be built; drawing without glass")
-        }
     }
 
     /// Puts the picture on a black margin, uploads it, and builds the pyramid.
@@ -550,28 +477,24 @@ public final class GlassRenderer {
         absorbPending(into: commands)
         guard let texture, screenSize.width > 0, screenSize.height > 0,
               let drawable = given ?? layer.nextDrawable(),
-              prepareEdgeList(width: drawable.texture.width, height: drawable.texture.height),
-              let edgeCount, let edgePixels, let edgeDispatch else {
+              let compute = commands.makeComputeCommandEncoder() else {
             commands.commit()
             return
         }
         let target = drawable.texture
         let rows = frame.picture.worldToLocalRows
-        let shape = scene?.shape
-        let bounds = shape?.bounds ?? (minX: 0, minY: 0, maxX: Double(screenSize.width), maxY: Double(screenSize.height))
-        // Without a scene there is nothing to trace; the straight picture
-        // still draws.
-        let glassAmount = scene == nil ? 0 : frame.glassAmount
         let keyLight = Vector3(-0.35, 0.8, 0.5).normalized
+        func float4(_ v: Vector3, _ w: Double = 0) -> SIMD4<Float> {
+            SIMD4(Float(v.x), Float(v.y), Float(v.z), Float(w))
+        }
         var uniforms = Uniforms(
             worldToModel0: SIMD4(rows[0], rows[1], rows[2], rows[3]),
             worldToModel1: SIMD4(rows[4], rows[5], rows[6], rows[7]),
             worldToModel2: SIMD4(rows[8], rows[9], rows[10], rows[11]),
-            eyeAndGlass: SIMD4(Float(frame.eye.x), Float(frame.eye.y), Float(frame.eye.z), Float(glassAmount)),
-            lidOriginAndScale: SIMD4(
-                Float(frame.lid.origin.x), Float(frame.lid.origin.y), Float(frame.lid.origin.z), Float(pixelScale)
-            ),
-            lidAxisY: SIMD4(Float(frame.lid.yAxis.x), Float(frame.lid.yAxis.y), Float(frame.lid.yAxis.z), 0),
+            eyeAndAmount: float4(frame.eye, min(max(frame.amount, 0), 1)),
+            lidOriginAndScale: float4(frame.lid.origin, Double(pixelScale)),
+            lidAxisY: float4(frame.lid.yAxis),
+            lidNormal: float4(frame.lid.zAxis),
             screen: SIMD4(
                 Float(screenSize.width), Float(screenSize.height), Float(target.width), Float(target.height)
             ),
@@ -579,78 +502,26 @@ public final class GlassRenderer {
                 Float(paddedOrigin.x), Float(paddedOrigin.y),
                 Float(paddedSize.width), Float(paddedSize.height)
             ),
-            blur: SIMD4(
-                Float(frame.maxBlurRadius * Double(pixelScale)), Float(frame.blurStrength),
-                Float(frame.blurFloor), maxLevel
-            ),
-            dim: SIMD4(Float(frame.dimFloor), Float(frame.dimStrength), Float(frame.dimReach), Float(frame.maxDim)),
-            slab: SIMD4(Float(bounds.minX), Float(bounds.minY), Float(bounds.maxX), Float(bounds.maxY)),
-            glass: SIMD4(
-                Float(shape?.thickness ?? 1), Self.indexOfRefraction,
-                Float(max(frame.environmentStrength, 0)), Float(shape?.cornerRadius ?? 0)
-            ),
             frost: SIMD4(
-                Float(min(max(frame.frost, 0), 1)),
-                Float(Self.maxFrostRadiusInPoints * pixelScale),
-                Float(shape?.edgeRadius ?? 0),
-                Float(edgeCapacity)
+                Float(max(frame.scatter, 0)),
+                Float(max(frame.maxBlurRadius, 0) * Double(pixelScale)),
+                Float(max(frame.lightLoss, 0)),
+                Float(min(max(frame.haze, 0), 1))
             ),
-            keyLight: SIMD4(Float(keyLight.x), Float(keyLight.y), Float(keyLight.z), 1.6)
+            surface: SIMD4(maxLevel, Float(max(frame.reflections, 0)), Float(max(frame.grain, 0)) * 0.08, 0),
+            keyLight: float4(keyLight, 1.6)
         )
 
-        guard let clear = commands.makeBlitCommandEncoder() else {
-            commands.commit()
-            return
-        }
-        clear.fill(buffer: edgeCount, range: 0..<4, value: 0)
-        clear.endEncoding()
-
-        // Serial dispatch: each pass sees the writes of the one before.
-        guard let compute = commands.makeComputeCommandEncoder() else {
-            commands.commit()
-            return
-        }
+        compute.setComputePipelineState(tracer)
         compute.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        compute.setBuffer(edgeCount, offset: 0, index: 1)
-        compute.setBuffer(edgePixels, offset: 0, index: 2)
         compute.setTexture(target, index: 0)
         compute.setTexture(texture, index: 1)
-
-        compute.setComputePipelineState(tracer)
         let threadWidth = tracer.threadExecutionWidth
         let threadHeight = max(tracer.maxTotalThreadsPerThreadgroup / threadWidth, 1)
         compute.dispatchThreads(
             MTLSize(width: target.width, height: target.height, depth: 1),
             threadsPerThreadgroup: MTLSize(width: threadWidth, height: threadHeight, depth: 1)
         )
-
-        if glassAmount > 0.001 {
-            compute.setComputePipelineState(edgeArguments)
-            compute.setBuffer(edgeDispatch, offset: 0, index: 6)
-            compute.dispatchThreadgroups(
-                MTLSize(width: 1, height: 1, depth: 1),
-                threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-            )
-
-            var bound = true
-            if tracesRays {
-                if let scene, let structure = scene.accelerationStructure {
-                    compute.setAccelerationStructure(structure, bufferIndex: 3)
-                    compute.setBuffer(scene.normals, offset: 0, index: 4)
-                    compute.setBuffer(scene.indices, offset: 0, index: 5)
-                } else {
-                    bound = false
-                }
-            }
-            if bound {
-                compute.setComputePipelineState(edgeTracer)
-                compute.dispatchThreadgroups(
-                    indirectBuffer: edgeDispatch,
-                    indirectBufferOffset: 0,
-                    threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
-                )
-            }
-        }
         compute.endEncoding()
         commands.present(drawable)
         let timing = self.timing
@@ -658,18 +529,6 @@ public final class GlassRenderer {
             timing.record(gpuSeconds: buffer.gpuEndTime - buffer.gpuStartTime)
         }
         commands.commit()
-    }
-
-    /// Sizes the edge list for a drawable: an eighth of its pixels, far more
-    /// than the edge band covers even with the lid nearly shut.
-    private func prepareEdgeList(width: Int, height: Int) -> Bool {
-        let capacity = max(width * height / 8, 1024)
-        if edgeCapacity == capacity, edgeCount != nil { return true }
-        edgeCount = device.makeBuffer(length: 4, options: .storageModePrivate)
-        edgePixels = device.makeBuffer(length: capacity * 8, options: .storageModePrivate)
-        edgeDispatch = device.makeBuffer(length: 12, options: .storageModePrivate)
-        edgeCapacity = capacity
-        return edgeCount != nil && edgePixels != nil && edgeDispatch != nil
     }
 }
 

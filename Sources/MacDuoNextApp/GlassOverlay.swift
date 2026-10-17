@@ -13,16 +13,21 @@ final class OverlayWindow: NSWindow {
 
 /// The settings that shape one frame.
 struct DepthTuning {
-    var viewingDistance: Double = 2.7
-    var recession: Double = 2
-    var blurEvenness: Double = 0.4
-    var dimReach: Double = 0.7
-    var maxBlurRadius: Double = 55
-    var maxDim: Double = 0.4
-    /// 0 draws no glass at all.
-    var glass: Double = 1
-    /// How rough the pane gets with the lid fully closed, 0...1.
+    /// Eye distance in screen heights, when no face is tracked.
+    var viewingDistance: Double = 2.6
+    /// Degrees the left-behind screen leans back per degree of closing. One
+    /// leaves it exactly where it stood.
+    var recession: Double = 1
+    /// False: clear glass, no frost or light loss.
+    var isGlassEnabled = true
+    /// How strongly the glass scatters, 0...1.
     var frost: Double = 0.75
+    /// How much light is lost behind the glass, 0...1.
+    var lightLoss: Double = 0.6
+    /// The most blur, in points.
+    var maxBlurRadius: Double = 60
+    /// Strength of the glass's reflection, 0...1.
+    var reflections: Double = 0.6
 }
 
 private final class MetalHostView: NSView {
@@ -64,7 +69,6 @@ final class GlassOverlay {
     private var screenSize: CGSize = .zero
     private var startAngle: Double = 90
     private var geometry = LidGeometry(screenSize: Size2(width: 1, height: 1), pointsPerMillimetre: 5)
-    private var gradient = BlurGradient()
     private var tuning = DepthTuning()
     private var fadeIn: TimeInterval = 0.07
     private var hasRevealed = false
@@ -78,7 +82,6 @@ final class GlassOverlay {
     var metalLayer: CAMetalLayer? { window == nil ? nil : renderer?.layer }
     /// The room for the current run.
     var roomGeometry: LidGeometry { geometry }
-    var renderPath: String { renderer?.pathDescription ?? "unavailable" }
 
     @discardableResult
     func warmUp() -> Bool {
@@ -195,7 +198,6 @@ final class GlassOverlay {
                           let picture else { return }
                     renderer.adopt(picture)
                     self.update(
-                        progress: 0,
                         currentAngle: self.startAngle,
                         eye: self.geometry.centredEye(
                             startAngle: self.startAngle,
@@ -249,18 +251,18 @@ final class GlassOverlay {
         }
     }
 
-    /// Measures the screen and builds the glass to match it.
+    /// Measures the screen, so the room is to scale.
     private func prepareRoom(on screen: NSScreen) {
         geometry = screen.lidGeometry
-        renderer?.prepareGlass(GlassSlabMesh.Shape.macBook(
-            pictureSize: geometry.screenSize,
-            pointsPerMillimetre: geometry.pointsPerMillimetre
-        ))
     }
 
     /// Draws the room with the lid at `currentAngle` and the eye at `eye`.
+    ///
+    /// The captured screen is never altered: it stands, as it was, where the
+    /// screen stood at the start angle. Everything that happens to it on the
+    /// way to the eye is the glass of the real screen, which the renderer
+    /// simulates from the distance between the two.
     func update(
-        progress: Double,
         currentAngle: Double,
         eye: Vector3,
         tuning: DepthTuning,
@@ -273,13 +275,12 @@ final class GlassOverlay {
             currentAngle: currentAngle,
             recession: tuning.recession
         )
-        // The glass comes in over the first part of the close, so the frame
-        // that fades in is the flat screen itself and the frame that fades
-        // out is again.
-        let glassAmount = Self.smoothstep(progress / Self.glassRampProgress)
-        // The frost builds over more of the close than the glass does, so
-        // the pane turns from clear to rough as the lid comes down.
-        let frost = tuning.glass > 0 ? tuning.frost * Self.smoothstep(progress / Self.frostRampProgress) : 0
+        // The glass's own reflection and grain come in over the first
+        // degrees of the close, so the frame that fades in, and the one that
+        // fades out, is the screen itself.
+        let amount = Self.smoothstep((startAngle - currentAngle) / Self.surfaceRampDegrees)
+        let glass = tuning.isGlassEnabled
+        let frost = glass ? min(max(tuning.frost, 0), 1) : 0
         // Eye positions are rounded to a hundredth of a point, so a spring
         // creeping towards rest does not keep the GPU busy.
         let roundedEye = (eye * 100).rounded(.toNearestOrEven) / 100
@@ -287,26 +288,28 @@ final class GlassOverlay {
             lid: geometry.lidFrame(angle: currentAngle),
             picture: geometry.lidFrame(angle: pictureAngle),
             eye: roundedEye,
-            glassAmount: glassAmount * min(max(tuning.glass, 0), 1),
-            environmentStrength: tuning.glass,
-            frost: frost,
-            blurStrength: gradient.blurStrength(progress: progress),
-            dimStrength: gradient.dimStrength(progress: progress),
-            blurFloor: tuning.blurEvenness,
-            dimFloor: gradient.dimHingeFloor,
-            dimReach: tuning.dimReach,
+            amount: amount,
+            scatter: frost * Self.maxScatter,
             maxBlurRadius: tuning.maxBlurRadius,
-            maxDim: tuning.maxDim
+            lightLoss: glass ? min(max(tuning.lightLoss, 0), 1) * Self.maxLightLoss : 0,
+            haze: frost * Self.maxHaze,
+            reflections: glass ? tuning.reflections : 0,
+            grain: frost
         )
         guard frame != lastFrame || renderer.hasPendingPicture || !hasRevealed else { return }
         lastFrame = frame
         renderer.render(frame, drawable: drawable)
     }
 
-    /// Progress at which the glass is fully in.
-    private static let glassRampProgress: Double = 0.35
-    /// Progress at which the frost is fully rough.
-    private static let frostRampProgress: Double = 0.7
+    /// Degrees of closing over which the glass's surface fades in.
+    private static let surfaceRampDegrees: Double = 12
+    /// Fully frosted, a point one screen height behind the glass spreads
+    /// over a third of a screen height.
+    private static let maxScatter: Double = 0.33
+    /// At the strongest setting, light from one screen height behind the
+    /// glass keeps exp(-9), about a ten-thousandth: black.
+    private static let maxLightLoss: Double = 9
+    private static let maxHaze: Double = 0.2
 
     private static func smoothstep(_ value: Double) -> Double {
         let clamped = min(max(value, 0), 1)

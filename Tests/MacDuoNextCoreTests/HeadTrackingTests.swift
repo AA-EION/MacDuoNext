@@ -74,60 +74,6 @@ struct LidGeometryTests {
     }
 }
 
-struct GlassSlabMeshTests {
-    private let shape = GlassSlabMesh.Shape.macBook(pictureSize: Size2(width: 1512, height: 982), pointsPerMillimetre: 5)
-
-    @Test
-    func testMeshIsConsistent() {
-        let mesh = GlassSlabMesh(shape: shape)
-        #expect(mesh.positions.count == mesh.normals.count)
-        #expect(mesh.indices.count % 3 == 0)
-        #expect(mesh.triangleCount > 100)
-        #expect(mesh.indices.allSatisfy { Int($0) < mesh.vertexCount })
-        for index in 0..<mesh.vertexCount {
-            let n = Vector3(Double(mesh.normals[index * 3]), Double(mesh.normals[index * 3 + 1]), Double(mesh.normals[index * 3 + 2]))
-            #expect(abs(n.length - 1) < 1e-5)
-        }
-    }
-
-    @Test
-    func testMeshStaysInsideTheSlabBounds() {
-        let mesh = GlassSlabMesh(shape: shape)
-        let bounds = shape.bounds
-        for index in 0..<mesh.vertexCount {
-            let x = Double(mesh.positions[index * 3])
-            let y = Double(mesh.positions[index * 3 + 1])
-            let z = Double(mesh.positions[index * 3 + 2])
-            #expect(x >= bounds.minX - 1e-3 && x <= bounds.maxX + 1e-3)
-            #expect(y >= bounds.minY - 1e-3 && y <= bounds.maxY + 1e-3)
-            #expect(z >= -1e-4 && z <= shape.thickness + 1e-3)
-        }
-    }
-
-    @Test
-    func testTrianglesFaceOutward() {
-        // Each face's winding normal agrees with its vertex normals.
-        let mesh = GlassSlabMesh(shape: shape)
-        func position(_ i: UInt32) -> Vector3 {
-            let base = Int(i) * 3
-            return Vector3(Double(mesh.positions[base]), Double(mesh.positions[base + 1]), Double(mesh.positions[base + 2]))
-        }
-        func normal(_ i: UInt32) -> Vector3 {
-            let base = Int(i) * 3
-            return Vector3(Double(mesh.normals[base]), Double(mesh.normals[base + 1]), Double(mesh.normals[base + 2]))
-        }
-        var disagreements = 0
-        for t in 0..<mesh.triangleCount {
-            let a = mesh.indices[t * 3], b = mesh.indices[t * 3 + 1], c = mesh.indices[t * 3 + 2]
-            let face = (position(b) - position(a)).cross(position(c) - position(a))
-            guard face.length > 1e-9 else { continue }
-            let average = normal(a) + normal(b) + normal(c)
-            if face.dot(average) <= 0 { disagreements += 1 }
-        }
-        #expect(disagreements == 0)
-    }
-}
-
 struct EyeEstimatorTests {
     private let estimator = EyeEstimator()
 
