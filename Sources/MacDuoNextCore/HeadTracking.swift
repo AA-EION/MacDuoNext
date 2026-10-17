@@ -298,6 +298,11 @@ public struct ViewpointController {
         guard state != next else { return }
         state = next
         stateSince = now
+        // Holding means holding still, and the drift home starts from rest,
+        // so it eases in and cannot overshoot.
+        if next == .holding {
+            for index in springs.indices { springs[index].velocity = 0 }
+        }
     }
 }
 
