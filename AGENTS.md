@@ -66,3 +66,5 @@ with the `simd` module.
 
 `VERSION` holds the marketing version. Tag `vX.Y.Z[-suffix]`; a suffix publishes an
 ad-hoc signed prerelease without secrets (`.github/workflows/release.yml`).
+Where tags cannot be pushed, a branch commit whose message contains `[prerelease]`
+makes CI publish `v<VERSION>-beta.<run>` on that commit.

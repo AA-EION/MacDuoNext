@@ -235,6 +235,10 @@ export MACDUONEXT_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 Push a `v*` tag. A tag with a suffix (`v1.0.0-beta.1`) publishes a prerelease, which may be
 built without signing secrets. See [.github/workflows/release.yml](.github/workflows/release.yml).
 
+To publish a test build straight from a branch, push a commit whose message contains
+`[prerelease]`. CI builds and tests it, then publishes it as `v<VERSION>-beta.<run>` on that
+exact commit ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
+
 ---
 
 ## Support & Donations

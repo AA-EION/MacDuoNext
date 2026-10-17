@@ -1,6 +1,11 @@
 # CI: build, test and package on real macOS runners.
 #
 # MacDuoNext only builds on macOS (Metal, Vision, ScreenCaptureKit, IOKit).
+#
+# Branch prereleases: a push to any branch other than main whose head commit
+# message contains "[prerelease]" also publishes the DMG and ZIP it built as a
+# GitHub prerelease, tagged v<VERSION>-beta.<run number> on that exact commit.
+# The tag is created by GitHub, so nothing has to push tags.
 
 name: CI
 
@@ -62,3 +67,49 @@ jobs:
             dist/*.zip
           if-no-files-found: error
           retention-days: 14
+
+  prerelease:
+    name: Publish branch prerelease
+    needs: build
+    if: >-
+      github.event_name == 'push' &&
+      github.ref != 'refs/heads/main' &&
+      contains(github.event.head_commit.message, '[prerelease]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: MacDuoNext-${{ github.sha }}
+          path: dist
+
+      - name: Create prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          tag="v${version}-beta.${GITHUB_RUN_NUMBER}"
+          dmg="$(ls dist/*.dmg)"
+          sha256="$(sha256sum "$dmg" | awk '{print $1}')"
+          {
+            echo '> [!WARNING]'
+            echo '> **Test build — not signed with a Developer ID and not notarized.**'
+            echo '> macOS will block it on first open. After copying MacDuoNext to Applications, either'
+            echo '> open *System Settings › Privacy & Security* and click **Open Anyway**, or run'
+            echo '> `xattr -dr com.apple.quarantine /Applications/MacDuoNext.app`.'
+            echo
+            echo "Built from branch \`${BRANCH}\` at ${GITHUB_SHA}."
+            echo
+            sed -e "s/{{DMG_NAME}}/$(basename "$dmg")/g" \
+                -e "s/{{SHA256}}/${sha256}/g" \
+                -e "s/{{TAG}}/${tag}/g" \
+                .github/RELEASE_TEMPLATE.md
+          } > notes.md
+          gh release create "$tag" dist/*.dmg dist/*.zip \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "MacDuoNext ${tag}" --notes-file notes.md
