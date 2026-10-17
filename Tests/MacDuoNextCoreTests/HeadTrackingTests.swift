@@ -250,7 +250,11 @@ struct ViewpointControllerTests {
     func testReturnNeverOvershoots() {
         var controller = ViewpointController(centre: centre)
         run(&controller, from: 0, to: 3, seeing: face)
-        var now = 3.0
+        // Until the hold starts the eye may still be finishing its glide onto
+        // the last face; from the hold on it may only ever approach the centre.
+        run(&controller, from: 3, to: 3.4, seeing: nil)
+        #expect(controller.state == .holding)
+        var now = 3.4
         var previous = (controller.eye - centre).length
         while now < 25 {
             controller.advance(now: now, dt: 1.0 / 60, observed: nil, centre: centre)
