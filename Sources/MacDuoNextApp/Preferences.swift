@@ -22,12 +22,13 @@ final class Preferences: ObservableObject {
         static let isHeadTrackingEnabled = "isHeadTrackingEnabled"
         static let isGlassEnabled = "isGlassEnabled"
         static let glassReflections = "glassReflections"
+        static let frost = "frost"
 
         static let all = [
             isEnabled, isTimeoutEnabled, thresholdAngle, blurSpan, maxBlurRadius,
             maxDim, viewingDistance, recession, blurEvenness, dimReach,
             showsAngleInMenuBar, isLivePicture, isHeadTrackingEnabled,
-            isGlassEnabled, glassReflections,
+            isGlassEnabled, glassReflections, frost,
         ]
     }
 
@@ -47,6 +48,7 @@ final class Preferences: ObservableObject {
         Key.isHeadTrackingEnabled: true,
         Key.isGlassEnabled: true,
         Key.glassReflections: 0.6,
+        Key.frost: 0.75,
     ]
 
     /// Master switch for the depth effect.
@@ -131,6 +133,12 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(glassReflections, forKey: Key.glassReflections) }
     }
 
+    /// How rough the glass gets with the lid closed, 0 clear to 1 fully
+    /// frosted.
+    @Published var frost: Double {
+        didSet { defaults.set(frost, forKey: Key.frost) }
+    }
+
     /// Eye distance in screen heights, at the two ends of the perspective
     /// slider. The panel offers the strength, which runs the other way.
     static let farthestEye: Double = 6
@@ -180,6 +188,7 @@ final class Preferences: ObservableObject {
         isHeadTrackingEnabled = defaults.bool(forKey: Key.isHeadTrackingEnabled)
         isGlassEnabled = defaults.bool(forKey: Key.isGlassEnabled)
         glassReflections = defaults.double(forKey: Key.glassReflections)
+        frost = defaults.double(forKey: Key.frost)
     }
 
     func resetToDefaults() {
@@ -201,5 +210,6 @@ final class Preferences: ObservableObject {
         isHeadTrackingEnabled = defaults.bool(forKey: Key.isHeadTrackingEnabled)
         isGlassEnabled = defaults.bool(forKey: Key.isGlassEnabled)
         glassReflections = defaults.double(forKey: Key.glassReflections)
+        frost = defaults.double(forKey: Key.frost)
     }
 }

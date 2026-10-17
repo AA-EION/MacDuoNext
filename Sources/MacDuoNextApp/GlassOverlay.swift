@@ -21,6 +21,8 @@ struct DepthTuning {
     var maxDim: Double = 0.4
     /// 0 draws no glass at all.
     var glass: Double = 1
+    /// How rough the pane gets with the lid fully closed, 0...1.
+    var frost: Double = 0.75
 }
 
 private final class MetalHostView: NSView {
@@ -66,6 +68,8 @@ final class GlassOverlay {
     private var tuning = DepthTuning()
     private var fadeIn: TimeInterval = 0.07
     private var hasRevealed = false
+    /// The last frame drawn, so a frame that would look the same is skipped.
+    private var lastFrame: GlassFrame?
 
     var isVisible: Bool { window != nil }
     var isPictureReady: Bool { renderer?.isReady ?? false }
@@ -227,6 +231,7 @@ final class GlassOverlay {
         window.alphaValue = 0
         window.orderFrontRegardless()
         hasRevealed = false
+        lastFrame = nil
         self.window = window
     }
 
@@ -263,14 +268,20 @@ final class GlassOverlay {
         // The glass comes in over the first part of the close, so the frame
         // that fades in is the flat screen itself and the frame that fades
         // out is again.
-        let clamped = min(max(progress / Self.glassRampProgress, 0), 1)
-        let glassAmount = clamped * clamped * (3 - 2 * clamped)
-        renderer.render(GlassFrame(
+        let glassAmount = Self.smoothstep(progress / Self.glassRampProgress)
+        // The frost builds over more of the close than the glass does, so
+        // the pane turns from clear to rough as the lid comes down.
+        let frost = tuning.glass > 0 ? tuning.frost * Self.smoothstep(progress / Self.frostRampProgress) : 0
+        // Eye positions are rounded to a hundredth of a point, so a spring
+        // creeping towards rest does not keep the GPU busy.
+        let roundedEye = (eye * 100).rounded(.toNearestOrEven) / 100
+        let frame = GlassFrame(
             lid: geometry.lidFrame(angle: currentAngle),
             picture: geometry.lidFrame(angle: pictureAngle),
-            eye: eye,
+            eye: roundedEye,
             glassAmount: glassAmount * min(max(tuning.glass, 0), 1),
             environmentStrength: tuning.glass,
+            frost: frost,
             blurStrength: gradient.blurStrength(progress: progress),
             dimStrength: gradient.dimStrength(progress: progress),
             blurFloor: tuning.blurEvenness,
@@ -278,11 +289,21 @@ final class GlassOverlay {
             dimReach: tuning.dimReach,
             maxBlurRadius: tuning.maxBlurRadius,
             maxDim: tuning.maxDim
-        ))
+        )
+        guard frame != lastFrame || renderer.hasPendingPicture || !hasRevealed else { return }
+        lastFrame = frame
+        renderer.render(frame)
     }
 
     /// Progress at which the glass is fully in.
     private static let glassRampProgress: Double = 0.35
+    /// Progress at which the frost is fully rough.
+    private static let frostRampProgress: Double = 0.7
+
+    private static func smoothstep(_ value: Double) -> Double {
+        let clamped = min(max(value, 0), 1)
+        return clamped * clamped * (3 - 2 * clamped)
+    }
 
     func dismiss(animated: Bool, duration: TimeInterval = 0.22) {
         closeFadingWindow()

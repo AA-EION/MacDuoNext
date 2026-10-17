@@ -696,7 +696,8 @@ final class LidController: ObservableObject {
             dimReach: preferences.dimReach,
             maxBlurRadius: preferences.maxBlurRadius,
             maxDim: preferences.maxDim,
-            glass: preferences.isGlassEnabled ? preferences.glassReflections : 0
+            glass: preferences.isGlassEnabled ? preferences.glassReflections : 0,
+            frost: preferences.frost
         )
     }
 

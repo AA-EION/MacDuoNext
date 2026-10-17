@@ -22,7 +22,6 @@
 "Tracking" = "Siguiendo";
 "Returning to centre" = "Volviendo al centro";
 "Glass" = "Cristal";
-"Draws the picture under ray-traced cover glass." = "Dibuja la imagen bajo un cristal con trazado de rayos.";
 "Reflections" = "Reflejos";
 "Rendering: %@" = "Renderizado: %@";
 "hardware ray tracing" = "trazado de rayos por hardware";
@@ -62,3 +61,6 @@
 "Screen Recording permission is required to show the depth effect." = "Se necesita el permiso de Grabación de pantalla para mostrar el efecto.";
 "Open System Settings" = "Abrir Configuración del Sistema";
 "Could not open System Settings. Open it manually and enable screen recording for MacDuoNext under Privacy & Security." = "No se pudo abrir Configuración del Sistema. Ábrela manualmente y activa la grabación de pantalla para MacDuoNext en Privacidad y seguridad.";
+"Frost" = "Esmerilado";
+"How rough the glass gets as the lid closes." = "Cuánto se esmerila el cristal al cerrar la tapa.";
+"Draws the picture under ray-traced frosted glass." = "Dibuja la imagen bajo un cristal esmerilado con trazado de rayos.";

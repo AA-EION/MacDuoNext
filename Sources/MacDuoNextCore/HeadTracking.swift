@@ -158,7 +158,10 @@ public struct LidAngleHistory {
 /// Where the eye is, for each frame the overlay draws.
 ///
 /// While a face is in view the eye follows it, so the held picture stays put
-/// in the room as the head moves. When the face is lost the eye keeps still
+/// in the room as the head moves. The camera delivers 30 sightings a second
+/// and the display draws 60 to 120 frames, so between sightings the eye is
+/// carried forward along the filtered head velocity: it moves on every frame
+/// the display draws instead of stepping at the camera's rate. When the face is lost the eye keeps still
 /// for a moment, in case the detector only blinked, and then drifts back to
 /// the centred position as slowly as the settle allows. A critically damped
 /// spring from rest eases in and out on its own, which keeps that drift calm.
@@ -178,8 +181,12 @@ public struct ViewpointController {
 
     /// How long a lost face is held before the drift starts, in seconds.
     public var holdDuration: Double = 0.6
-    /// Spring frequency, radians per second, while following a face.
-    public var trackingFrequency: Double = 10
+    /// Spring frequency, radians per second, while following a face. High:
+    /// the filter already removes the jitter, and the spring only rounds off
+    /// the last corners, with about 2 / frequency seconds of lag.
+    public var trackingFrequency: Double = 60
+    /// How far past the newest sighting the head is extrapolated, at most.
+    public var maximumLead: Double = 0.1
     /// While gliding onto a newly found face. A jump would break the illusion.
     public var acquiringFrequency: Double = 3.5
     /// How long the glide onto a face lasts before full tracking.
@@ -192,7 +199,9 @@ public struct ViewpointController {
     public private(set) var eye: Vector3
 
     private var springs: [CriticallyDampedSpring]
-    private var filter = OneEuroFilter3(minimumCutoff: 0.9, beta: 0.015)
+    /// Positions are in points, so speeds are in points per second; a head
+    /// moving normally runs at a few hundred.
+    private var filter = OneEuroFilter3(minimumCutoff: 2.0, beta: 0.04, derivativeCutoff: 1.5)
     private var lastObservationTime: Double?
     private var lastSeen: Double = -.greatestFiniteMagnitude
     private var target: Vector3?
@@ -261,12 +270,13 @@ public struct ViewpointController {
 
         let goal: Vector3
         let frequency: Double
+        let head = filter.predicted(at: now, maxLead: maximumLead) ?? target ?? centre
         switch state {
         case .acquiring:
-            goal = target ?? centre
+            goal = head
             frequency = acquiringFrequency
         case .tracking:
-            goal = target ?? centre
+            goal = head
             frequency = trackingFrequency
         case .holding:
             goal = eye
@@ -276,11 +286,17 @@ public struct ViewpointController {
             frequency = returningFrequency
         }
 
-        let step = min(max(dt, 0), 1.0 / 20)
+        // Semi-implicit Euler is stable below frequency * dt = 2; substeps
+        // keep a fast spring stable through a slow frame.
+        let elapsed = min(max(dt, 0), 1.0 / 10)
+        let substeps = max(Int((frequency * elapsed / 0.5).rounded(.up)), 1)
+        let step = elapsed / Double(substeps)
         let components = [goal.x, goal.y, goal.z]
         for index in 0..<3 {
             springs[index].frequency = frequency
-            springs[index].advance(to: components[index], dt: step)
+            for _ in 0..<substeps {
+                springs[index].advance(to: components[index], dt: step)
+            }
         }
         eye = Vector3(springs[0].value, springs[1].value, springs[2].value)
         if state == .returning, (eye - centre).length < 0.5,

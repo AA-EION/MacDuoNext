@@ -25,6 +25,15 @@ public struct OneEuroFilter {
 
     public var current: Double? { value }
 
+    /// The filtered value carried forward along the filtered speed to
+    /// `time`, at most `maxLead` seconds past the last sample. Lets a 30 Hz
+    /// measurement drive a 60 or 120 Hz display without stepping.
+    public func predicted(at time: Double, maxLead: Double) -> Double? {
+        guard let value, let lastTime else { return nil }
+        let lead = min(max(time - lastTime, 0), maxLead)
+        return value + derivative * lead
+    }
+
     public mutating func filter(_ sample: Double, at time: Double) -> Double {
         guard let previous = value, let lastTime, time > lastTime else {
             value = sample
@@ -74,5 +83,12 @@ public struct OneEuroFilter3 {
 
     public mutating func reset() {
         for index in axes.indices { axes[index].reset() }
+    }
+
+    public func predicted(at time: Double, maxLead: Double) -> Vector3? {
+        guard let x = axes[0].predicted(at: time, maxLead: maxLead),
+              let y = axes[1].predicted(at: time, maxLead: maxLead),
+              let z = axes[2].predicted(at: time, maxLead: maxLead) else { return nil }
+        return Vector3(x, y, z)
     }
 }

@@ -22,7 +22,6 @@
 "Tracking" = "追踪中";
 "Returning to centre" = "正在回到中心";
 "Glass" = "玻璃";
-"Draws the picture under ray-traced cover glass." = "以光线追踪的盖板玻璃呈现画面。";
 "Reflections" = "反射";
 "Rendering: %@" = "渲染方式：%@";
 "hardware ray tracing" = "硬件光线追踪";
@@ -62,3 +61,6 @@
 "Screen Recording permission is required to show the depth effect." = "需要屏幕录制权限才能显示景深效果。";
 "Open System Settings" = "打开系统设置";
 "Could not open System Settings. Open it manually and enable screen recording for MacDuoNext under Privacy & Security." = "无法打开系统设置。请手动打开，在“隐私与安全性”中为 MacDuoNext 开启屏幕录制权限。";
+"Frost" = "磨砂";
+"How rough the glass gets as the lid closes." = "合上屏幕时玻璃的磨砂程度。";
+"Draws the picture under ray-traced frosted glass." = "以光线追踪的磨砂玻璃呈现画面。";

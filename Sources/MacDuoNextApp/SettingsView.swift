@@ -225,8 +225,14 @@ struct SettingsView: View {
         Section {
             Toggle(isOn: $preferences.isGlassEnabled) {
                 Text(localized("Glass"))
-                Text(localized("Draws the picture under ray-traced cover glass."))
+                Text(localized("Draws the picture under ray-traced frosted glass."))
             }
+            slider(
+                localized("Frost"), value: $preferences.frost, in: 0...1,
+                format: "%.0f%%", scale: 100,
+                help: localized("How rough the glass gets as the lid closes.")
+            )
+            .disabled(!preferences.isGlassEnabled)
             slider(
                 localized("Reflections"), value: $preferences.glassReflections, in: 0...1,
                 format: "%.0f%%", scale: 100

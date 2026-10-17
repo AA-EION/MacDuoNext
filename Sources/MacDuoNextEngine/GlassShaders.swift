@@ -1,19 +1,24 @@
 import Foundation
 
-/// The whole scene in one compute kernel, plus a pass that presents it.
+/// The whole scene in one compute kernel that writes the drawable directly.
 ///
 /// Every drawable pixel is a point on the real screen, which the lid carries
 /// through the room. The kernel casts a ray from the eye through that point
-/// and follows it into the held picture: a display panel under a slab of cover
-/// glass, standing where the screen stood when the effect began.
+/// and follows it into the held picture: a display panel under a pane of
+/// frosted cover glass, standing where the screen stood when the effect began.
 ///
-/// With `USE_RAYTRACING` the slab is a triangle mesh in a Metal acceleration
-/// structure, so its rolled edges and rounded corners refract and reflect, and
-/// Apple silicon with ray tracing hardware (M3 and later) walks it in hardware.
-/// Without it the slab is an analytic box: no rolled edge, same picture.
+/// Cost is kept where it shows. Across the flat middle of the pane the ray
+/// meets two parallel planes, solved in closed form. Only in the thin band
+/// around the rounded edge, where the glass curves, does the ray go to the
+/// acceleration structure (`USE_RAYTRACING`), which Apple silicon from M3 on
+/// walks in hardware. Without ray tracing the band uses an analytic box.
 ///
-/// Light is linear throughout. The picture texture is sRGB, so sampling
-/// decodes it, and the present pass encodes into an sRGB drawable.
+/// The frost is a rough surface: each pixel gathers the picture from a small
+/// disc of jittered taps on a blurred level of the pyramid, with the jitter
+/// fixed to the glass, so the grain stays on the pane as the lid moves. Haze
+/// lifts the darks the way scattering does, and soft reflections sit on top.
+/// The result is dithered before it is quantised to 8 bits, so dark gradients
+/// do not band.
 enum GlassShaders {
     static let source = """
     #include <metal_stdlib>
@@ -35,10 +40,11 @@ enum GlassShaders {
         float4 lidAxisY;          // real screen's up axis in world space
         float4 screen;            // screen width and height in points, drawable size in pixels
         float4 padded;            // padded picture origin and size, in points
-        float4 blur;              // max radius in pixels, strength, hinge floor, max level
+        float4 blur;              // max depth blur radius in pixels, strength, hinge floor, max level
         float4 dim;               // hinge floor, strength, reach, max dim
         float4 slab;              // glass bounds in plan: min x, min y, max x, max y
-        float4 glass;             // thickness, index of refraction, environment strength, unused
+        float4 glass;             // thickness, index of refraction, environment strength, corner radius
+        float4 frost;             // amount, max frost radius in pixels, edge radius, unused
         float4 keyLight;          // world direction to the key light, intensity
     };
 
@@ -58,6 +64,9 @@ enum GlassShaders {
     #define KERNEL_SCENE
     #endif
 
+    constant float goldenAngle = 2.39996323;
+    constant float3 absorption = float3(0.0040, 0.0012, 0.0030);  // per point: a faint green in long paths
+
     static float3 toModel(constant GlassUniforms &u, float3 p) {
         float4 h = float4(p, 1.0);
         return float3(dot(u.worldToModel0, h), dot(u.worldToModel1, h), dot(u.worldToModel2, h));
@@ -75,40 +84,83 @@ enum GlassShaders {
         return f0 + (1.0 - f0) * pow(1.0 - saturate(cosine), 5.0);
     }
 
-    // The picture on the panel at a point in model space, blurred and dimmed
-    // by height the same way the flat effect always has been.
-    static float3 samplePicture(constant GlassUniforms &u, texture2d<float> picture, float2 point) {
-        constexpr sampler linearSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    // Jimenez's interleaved gradient noise: cheap, and evenly spread.
+    static float gradientNoise(float2 p) {
+        return fract(52.9829189 * fract(dot(p, float2(0.06711056, 0.00583715))));
+    }
+
+    static float hash12(float2 p) {
+        float3 p3 = fract(float3(p.xyx) * 0.1031);
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
+    }
+
+    static float roundedRectDistance(float2 p, float4 bounds, float radius) {
+        float2 centre = (bounds.xy + bounds.zw) * 0.5;
+        float2 halfSize = (bounds.zw - bounds.xy) * 0.5;
+        float2 q = abs(p - centre) - halfSize + radius;
+        return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    }
+
+    static float3 sampleAt(constant GlassUniforms &u, texture2d<float> picture, float2 point, float lod) {
+        constexpr sampler pyramid(filter::linear, mip_filter::linear, address::clamp_to_zero);
         float2 unit = (point - u.padded.xy) / u.padded.zw;
-        if (unit.x < 0.0 || unit.x > 1.0 || unit.y < 0.0 || unit.y > 1.0) {
-            return float3(0.0);
-        }
-        float2 texCoord = float2(unit.x, 1.0 - unit.y);
+        return picture.sample(pyramid, float2(unit.x, 1.0 - unit.y), level(lod)).rgb;
+    }
 
+    // The panel seen through the frosted pane at a point in model space.
+    static float3 frostedPicture(constant GlassUniforms &u, texture2d<float> picture, float2 point, float frost) {
+        float scale = u.lidOriginAndScale.w;
         float height = clamp(point.y / u.screen.y, 0.0, 1.0);
-        float blur = u.blur.y * (u.blur.z + (1.0 - u.blur.z) * height);
-        // Naming this `level` would shadow Metal's level() selector.
-        float mipLevel = clamp(log2(max(blur * u.blur.x, 1.0)), 0.0, u.blur.w);
-        float3 colour = picture.sample(linearSampler, texCoord, level(mipLevel)).rgb;
+        float depthBlur = u.blur.y * (u.blur.z + (1.0 - u.blur.z) * height) * u.blur.x;
+        float radius = depthBlur + frost * u.frost.y;   // pixels
 
-        // smoothstep rather than a clamped ratio, so the height where the
-        // dimming reaches full strength leaves no visible edge.
-        float spread = smoothstep(0.0, max(u.dim.z, 0.02), height);
-        float fade = u.dim.y * (u.dim.x + (1.0 - u.dim.x) * spread);
-        // Raising the factor to 2.2 keeps the dimming setting a fraction of
+        float3 colour;
+        if (radius < 0.75) {
+            colour = sampleAt(u, picture, point, 0.0);
+        } else {
+            // Eight taps on a golden-angle spiral, each from a level blurred
+            // to about the gap between taps, so together they cover the disc.
+            // The spiral turns by a noise fixed to the glass, which is what
+            // makes the result grainy like frost rather than smooth.
+            float spread = radius / scale;
+            float lod = clamp(log2(max(radius * 0.35, 1.0)), 0.0, u.blur.w);
+            float turn = 6.2831853 * gradientNoise(floor(point * scale));
+            colour = float3(0.0);
+            for (int tap = 0; tap < 8; ++tap) {
+                float r = spread * sqrt((float(tap) + 0.5) / 8.0);
+                float a = float(tap) * goldenAngle + turn;
+                colour += sampleAt(u, picture, point + r * float2(cos(a), sin(a)), lod);
+            }
+            colour *= 0.125;
+        }
+
+        if (frost > 0.001) {
+            // Scattering lifts the darks towards the pane's average light, and
+            // the rough surface leaves a fine, fixed grain.
+            float3 haze = sampleAt(u, picture, point, max(u.blur.w - 2.0, 0.0)) * 0.85 + 0.03;
+            colour = mix(colour, haze, frost * 0.22);
+            colour *= 1.0 + (hash12(floor(point * 1.5)) - 0.5) * 0.08 * frost;
+        }
+
+        // Dimming by height. smoothstep, so the height where it reaches full
+        // strength leaves no edge; the 2.2 keeps the setting a fraction of
         // the encoded brightness.
+        float spreadDim = smoothstep(0.0, max(u.dim.z, 0.02), height);
+        float fade = u.dim.y * (u.dim.x + (1.0 - u.dim.x) * spreadDim);
         return colour * pow(1.0 - u.dim.w * fade, 2.2);
     }
 
-    // The room around the glass: dark, with a broad soft light overhead and
-    // behind the viewer, the way a desk lamp or ceiling panel sits, and one
-    // small key light for a glint.
-    static float3 sky(constant GlassUniforms &u, float3 modelDirection) {
+    // The room: dark, with a broad soft light overhead and behind the viewer,
+    // and one small key light. Frost spreads both into a sheen.
+    static float3 sky(constant GlassUniforms &u, float3 modelDirection, float frost) {
         float3 w = normalize(toWorldDirection(u, modelDirection));
-        float panel = smoothstep(0.30, 0.70, w.y) * smoothstep(-0.25, 0.30, w.z);
+        float soft = mix(0.0, 0.25, frost);
+        float panel = smoothstep(0.30 - soft, 0.70 + soft, w.y) * smoothstep(-0.25 - soft, 0.30 + soft, w.z);
         float3 colour = float3(0.86, 0.90, 1.0) * (0.45 * panel);
         colour += float3(0.020, 0.021, 0.024) * (0.6 + 0.4 * w.y);
-        float glint = pow(saturate(dot(w, u.keyLight.xyz)), 900.0) * u.keyLight.w;
+        float sharpness = mix(900.0, 40.0, frost);
+        float glint = pow(saturate(dot(w, u.keyLight.xyz)), sharpness) * u.keyLight.w * mix(1.0, 0.15, frost);
         return colour + float3(glint);
     }
 
@@ -174,38 +226,20 @@ enum GlassShaders {
     }
     #endif
 
-    static float3 panelThroughGlass(constant GlassUniforms &u, texture2d<float> picture,
-                                    float2 point, float2 straightPoint) {
-        // Shorter wavelengths bend more, so the colours part slightly where
-        // the glass bends the light the most: at the rolled edge.
-        float2 shift = (point - straightPoint) * 0.035;
-        if (length_squared(shift) < 0.0004) {
-            return samplePicture(u, picture, point);
-        }
-        return float3(samplePicture(u, picture, point - shift).r,
-                      samplePicture(u, picture, point).g,
-                      samplePicture(u, picture, point + shift).b);
-    }
-
-    // Follows one ray into the slab: a Fresnel reflection off the surface it
-    // enters, then refraction, absorption and internal reflection until the
-    // ray lands on the panel or leaves the glass.
-    static float3 traceGlass(constant GlassUniforms &u, texture2d<float> picture,
-                             float3 origin, float3 direction, float2 straightPoint SCENE_PARAMS) {
+    // The edge band: the ray enters the rolled edge, refracts, may reflect
+    // inside a few times, and lands on the panel or leaves the glass.
+    static float3 traceEdge(constant GlassUniforms &u, texture2d<float> picture,
+                            float3 origin, float3 direction, float2 straightPoint, float frost SCENE_PARAMS) {
         const float limit = 1.0e7;
-        // A faint green cast that only long paths through the glass show.
-        const float3 absorption = float3(0.0040, 0.0012, 0.0030);
-
         SlabHit entry = hitSlab(u, origin, direction, limit SCENE_PASS);
         if (!entry.found) { return float3(0.0); }
         float cosine = -dot(direction, entry.normal);
-        // Grazing misses, and the back of the panel.
         if (cosine <= 0.0 || entry.normal.z < -0.5) { return float3(0.0); }
 
         float ior = u.glass.y;
         float f0 = pow((ior - 1.0) / (ior + 1.0), 2.0);
         float fresnel = schlick(cosine, f0);
-        float3 colour = sky(u, reflect(direction, entry.normal)) * (fresnel * u.glass.z);
+        float3 colour = sky(u, reflect(direction, entry.normal), frost) * (fresnel * u.glass.z);
 
         float3 position = origin + direction * entry.distance;
         float3 inside = refract(direction, entry.normal, 1.0 / ior);
@@ -216,22 +250,34 @@ enum GlassShaders {
             position += inside * (next.distance + 0.01);
             throughput *= exp(-absorption * next.distance);
             if (next.normal.z < -0.9 && position.z < 0.05) {
-                colour += throughput * panelThroughGlass(u, picture, position.xy, straightPoint);
+                float3 panel = frostedPicture(u, picture, position.xy, frost);
+                // Shorter wavelengths bend more: the colours part a little
+                // where the edge bends the light the most.
+                float2 shift = (position.xy - straightPoint) * 0.035;
+                if (length_squared(shift) > 0.0004) {
+                    panel.r = mix(panel.r, sampleAt(u, picture, position.xy - shift, 1.0).r, 0.6);
+                    panel.b = mix(panel.b, sampleAt(u, picture, position.xy + shift, 1.0).b, 0.6);
+                }
+                colour += throughput * panel;
                 break;
             }
             float3 escape = refract(inside, -next.normal, ior);
             float3 mirrored = reflect(inside, -next.normal);
             if (all(escape == float3(0.0))) {
-                // Total internal reflection.
                 inside = mirrored;
                 continue;
             }
             float leaving = schlick(dot(escape, next.normal), f0);
-            colour += throughput * (1.0 - leaving) * sky(u, escape) * u.glass.z;
+            colour += throughput * (1.0 - leaving) * sky(u, escape, frost) * u.glass.z;
             throughput *= leaving;
             inside = mirrored;
         }
         return colour;
+    }
+
+    static float3 encodeSRGB(float3 c) {
+        c = max(c, 0.0);
+        return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, 12.92 * c, c <= 0.0031308);
     }
 
     kernel void glassKernel(texture2d<float, access::write> output [[texture(0)]],
@@ -252,41 +298,46 @@ enum GlassShaders {
         float3 origin = toModel(u, eye);
         float3 direction = normalize(toModelDirection(u, normalize(onLid - eye)));
 
-        // The straight line to the panel: exactly the screen at the start
-        // angle, so the overlay can fade in without a seam.
+        float glassAmount = u.eyeAndGlass.w;
+        float frost = u.frost.x;
         float3 colour = float3(0.0);
-        float2 straightPoint = float2(-1.0e6);
         if (direction.z < -1.0e-5) {
-            float travel = -origin.z / direction.z;
-            if (travel > 0.0) {
-                straightPoint = (origin + direction * travel).xy;
-                colour = samplePicture(u, picture, straightPoint);
+            // The straight line to the panel: exactly the screen at the start
+            // angle, so the overlay fades in and out without a seam.
+            float2 straightPoint = (origin + direction * (-origin.z / direction.z)).xy;
+            if (glassAmount <= 0.001) {
+                colour = frostedPicture(u, picture, straightPoint, 0.0);
+            } else {
+                float thickness = u.glass.x;
+                float3 front = origin + direction * ((thickness - origin.z) / direction.z);
+                float edge = roundedRectDistance(front.xy, u.slab, u.glass.w);
+                float band = u.frost.z + 2.0;
+                if (edge < -band) {
+                    // The flat middle: two parallel planes, in closed form.
+                    float ior = u.glass.y;
+                    float f0 = pow((ior - 1.0) / (ior + 1.0), 2.0);
+                    float fresnel = schlick(-direction.z, f0) * glassAmount;
+                    float3 inside = refract(direction, float3(0.0, 0.0, 1.0), 1.0 / ior);
+                    float travel = thickness / max(-inside.z, 1.0e-3);
+                    float2 refracted = front.xy + inside.xy * travel;
+                    float2 point = mix(straightPoint, refracted, glassAmount);
+                    float3 through = frostedPicture(u, picture, point, frost)
+                                   * mix(float3(1.0), exp(-absorption * travel), glassAmount);
+                    float3 reflection = sky(u, reflect(direction, float3(0.0, 0.0, 1.0)), frost) * u.glass.z;
+                    colour = through * (1.0 - fresnel) + reflection * fresnel;
+                } else if (edge < band) {
+                    float3 traced = traceEdge(u, picture, origin, direction, straightPoint, frost SCENE_PASS);
+                    float3 straight = frostedPicture(u, picture, straightPoint, 0.0);
+                    colour = mix(straight, traced, glassAmount);
+                }
+                // Beyond the band the ray misses the glass: the dark room.
             }
         }
 
-        float glassAmount = u.eyeAndGlass.w;
-        if (glassAmount > 0.001) {
-            float3 glass = traceGlass(u, picture, origin, direction, straightPoint SCENE_PASS);
-            colour = mix(colour, glass, glassAmount);
-        }
-        output.write(float4(colour, 1.0), gid);
-    }
-
-    struct PresentVertex {
-        float4 position [[position]];
-    };
-
-    vertex PresentVertex presentVertex(uint vertexID [[vertex_id]]) {
-        const float2 corners[3] = { float2(-1.0, -3.0), float2(-1.0, 1.0), float2(3.0, 1.0) };
-        PresentVertex out;
-        out.position = float4(corners[vertexID], 0.0, 1.0);
-        return out;
-    }
-
-    fragment float4 presentFragment(PresentVertex in [[stage_in]],
-                                    texture2d<float, access::read> frame [[texture(0)]]) {
-        uint2 pixel = min(uint2(in.position.xy), uint2(frame.get_width() - 1, frame.get_height() - 1));
-        return float4(frame.read(pixel).rgb, 1.0);
+        // Triangular dither of one 8-bit step, so gradients do not band.
+        float2 pixel = float2(gid);
+        float dither = (gradientNoise(pixel) + hash12(pixel + 17.0) - 1.0) / 255.0;
+        output.write(float4(saturate(encodeSRGB(colour) + dither), 1.0), gid);
     }
     """
 }

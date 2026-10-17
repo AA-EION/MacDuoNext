@@ -46,6 +46,11 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     public private(set) var computeDescription = "automatic"
     private let sequence = VNSequenceRequestHandler()
     private var isConfigured = false
+    private var camera: AVCaptureDevice?
+    /// Rate statistics, logged every few seconds while running.
+    private var statsSince: Double = 0
+    private var statsFrames = 0
+    private var statsDetectionTime: Double = 0
     /// Read on the session queue only.
     private var wantsRunning = false
 
@@ -66,21 +71,41 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
         preferNeuralEngine()
     }
 
-    /// Pins every stage of the request to the Neural Engine where there is
-    /// one. Intel Macs have none and keep Vision's own choice.
+    /// Pins the detector's network to the Neural Engine where there is one.
+    /// Vision usually picks it anyway; pinning keeps it off the GPU, which is
+    /// busy drawing the glass. Pre- and post-processing keep Vision's choice.
+    /// Intel Macs have no Neural Engine and keep Vision's choice throughout.
     private func preferNeuralEngine() {
-        guard let stages = try? request.supportedComputeStageDevices else { return }
-        for (stage, devices) in stages {
-            let neural = devices.first { device in
-                if case .neuralEngine = device { return true }
-                return false
-            }
-            if let neural {
-                request.setComputeDevice(neural, for: stage)
-                computeDescription = "Neural Engine"
-            }
+        guard let stages = try? request.supportedComputeStageDevices,
+              let devices = stages[.main] else { return }
+        let neural = devices.first { device in
+            if case .neuralEngine = device { return true }
+            return false
+        }
+        if let neural {
+            request.setComputeDevice(neural, for: .main)
+            computeDescription = "Neural Engine"
         }
         Self.log.notice("face detector compute: \(self.computeDescription, privacy: .public)")
+    }
+
+    /// Holds the camera at 30 frames a second. Left alone, the built-in
+    /// camera stretches its exposure in dim light and drops to 15 or fewer,
+    /// and the head then visibly lags. A shorter exposure is noisier, which
+    /// the face detector does not mind.
+    private func lockFrameRate(_ camera: AVCaptureDevice) {
+        let target = CMTime(value: 1, timescale: 30)
+        guard camera.activeFormat.videoSupportedFrameRateRanges.contains(where: {
+            $0.minFrameRate <= 30 && $0.maxFrameRate >= 30
+        }) else { return }
+        do {
+            try camera.lockForConfiguration()
+            camera.activeVideoMinFrameDuration = target
+            camera.activeVideoMaxFrameDuration = target
+            camera.unlockForConfiguration()
+        } catch {
+            Self.log.error("camera frame rate not locked: \(String(describing: error), privacy: .public)")
+        }
     }
 
     // MARK: - Permission
@@ -120,6 +145,8 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
             wantsRunning = true
             guard configureIfNeeded(), !session.isRunning else { return }
             session.startRunning()
+            // Starting applies the session preset, which resets the rate.
+            if let camera { lockFrameRate(camera) }
             Self.log.notice("camera started")
         }
     }
@@ -196,6 +223,7 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
                 connection.automaticallyAdjustsVideoMirroring = false
                 connection.isVideoMirrored = false
             }
+            self.camera = camera
             isConfigured = true
             return true
         } catch {
@@ -205,6 +233,23 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     }
 
     // MARK: - Frames
+
+    /// Called on the frame queue only.
+    private func recordStats(detection: Double) {
+        let now = CACurrentMediaTime()
+        if statsFrames == 0 { statsSince = now }
+        statsFrames += 1
+        statsDetectionTime += detection
+        let span = now - statsSince
+        guard span >= 5 else { return }
+        let rate = Double(statsFrames - 1) / span
+        let milliseconds = statsDetectionTime / Double(statsFrames) * 1000
+        Self.log.notice(
+            "camera \(rate, format: .fixed(precision: 1)) fps, detection \(milliseconds, format: .fixed(precision: 1)) ms"
+        )
+        statsFrames = 0
+        statsDetectionTime = 0
+    }
 
     /// When the frame was exposed, on the same clock as `CACurrentMediaTime`.
     /// Capture timestamps run on the host clock; anything implausible falls
@@ -234,11 +279,13 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
         let region = hint.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
             ?? CGRect(x: 0, y: 0, width: 1, height: 1)
         request.regionOfInterest = region
+        let detectionStarted = CACurrentMediaTime()
         do {
             try sequence.perform([request], on: pixels, orientation: .up)
         } catch {
             return
         }
+        recordStats(detection: CACurrentMediaTime() - detectionStarted)
         // The largest face is the one at the keyboard.
         let face = (request.results ?? [])
             .filter { $0.confidence > 0.5 }
