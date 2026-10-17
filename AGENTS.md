@@ -55,6 +55,14 @@ with the `simd` module.
 
 ## 5. Verified facts
 
+- `displaySyncEnabled = false` tears (users see horizontal "banding"). Keep vsync on
+  and draw from a `CAMetalDisplayLink`, which hands drawables over without blocking.
+- The hinge sensor refreshes at ~10 Hz. Draw at the angle predicted for the frame's
+  presentation time (`LidAnglePredictor`), or the held picture trails the lid and
+  looks attached to it instead of to the room.
+- Keep ray tracing out of the per-pixel kernel: an intersector in a kernel raises its
+  register use for every thread. The edge band goes through an indirect pass.
+
 - Vision ships a struct `FaceObservation` on macOS 15+; ours is `FaceSighting`.
 - `VNRequest.supportedComputeStageDevices` is a throwing **property** (macOS 14+).
 - SwiftPM resource bundle: `MacDuoNext_MacDuoNextApp.bundle`, copied to

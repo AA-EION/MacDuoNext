@@ -188,9 +188,9 @@ public struct ViewpointController {
     /// How far past the newest sighting the head is extrapolated, at most.
     public var maximumLead: Double = 0.1
     /// While gliding onto a newly found face. A jump would break the illusion.
-    public var acquiringFrequency: Double = 3.5
+    public var acquiringFrequency: Double = 8
     /// How long the glide onto a face lasts before full tracking.
-    public var acquiringDuration: Double = 0.8
+    public var acquiringDuration: Double = 0.4
     /// The drift back to centre. A critically damped spring is within 1 %
     /// after about 6.6 / frequency seconds, so this takes about 11 s.
     public var returningFrequency: Double = 0.6

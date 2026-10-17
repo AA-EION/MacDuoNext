@@ -53,13 +53,18 @@ final class LidController: ObservableObject {
     private var isCameraRunning = false
     /// The room of the current run, measured when the effect starts.
     private var room: LidGeometry?
+    /// Where the head was when the camera last stopped while tracking.
+    private var lastTrackedEye: (position: Vector3, time: Double)?
 
     private var enabledSubscription: AnyCancellable?
     private var pictureTask: Task<Void, Never>?
     private var pollTimer: Timer?
     private var pollInterval: TimeInterval = 0
-    private var displayLink: CADisplayLink?
+    private var displayLink: CAMetalDisplayLink?
+    private var displayLinkProxy: MetalDisplayLinkProxy?
     private var lastFrameTime: CFTimeInterval = 0
+    /// Recent changes of the sensor reading, for the angle at display time.
+    private var anglePredictor = LidAnglePredictor()
     private var lastPublishTime: CFTimeInterval = 0
 
     private var rawAngle: Double = 0
@@ -68,7 +73,9 @@ final class LidController: ObservableObject {
     private var lastChangedAngle: Double?
     private var lastChangeTime: CFTimeInterval = 0
     private var lastClosingTime: CFTimeInterval = -.greatestFiniteMagnitude
-    private var visualAngle = CriticallyDampedSpring()
+    /// Only rounds off the corners where a new reading corrects the
+    /// prediction; the prediction itself removes the sensor's lag.
+    private var visualAngle = CriticallyDampedSpring(frequency: 40)
     private var consecutiveFailedReads = 0
     private var startedAt: CFTimeInterval = 0
     private var preview: PreviewRun?
@@ -96,7 +103,9 @@ final class LidController: ObservableObject {
     private var lowestRunAngle: Double = 0
 
     private static let idlePollInterval: TimeInterval = 1.0 / 8
-    private static let activePollInterval: TimeInterval = 1.0 / 30
+    /// While the effect is up or close, the sensor is read at 60 Hz so each
+    /// change of its value is seen within a frame.
+    private static let activePollInterval: TimeInterval = 1.0 / 60
     private static let fadeInDuration: TimeInterval = 0.07
     /// Degrees above the pre-warm zone at which polling speeds up.
     private static let fastPollMargin: Double = 20
@@ -304,6 +313,7 @@ final class LidController: ObservableObject {
 
         rawAngle = angle
         angleHistory.record(angle: angle, at: CACurrentMediaTime())
+        anglePredictor.record(angle: angle, at: CACurrentMediaTime())
         peakAngle = max(peakAngle, angle)
         if isActive { lowestRunAngle = min(lowestRunAngle, angle) }
         publish(angle: angle)
@@ -633,59 +643,84 @@ final class LidController: ObservableObject {
 
     // MARK: - Animation
 
+    /// Drives drawing from a Metal display link on the overlay's layer. It
+    /// hands over a drawable when the display can take one, timed to the
+    /// refresh: no tearing, and nothing on the main thread waits for the GPU.
     private func startDisplayLink() {
         stopDisplayLink()
-        guard let window = overlay.hostWindow else {
-            Diagnostics.lid.notice("display link skipped, no overlay window")
+        guard let layer = overlay.metalLayer else {
+            Diagnostics.lid.notice("display link skipped, no overlay layer")
             return
         }
         Diagnostics.lid.notice("display link started")
-        let link = window.displayLink(target: self, selector: #selector(step(_:)))
+        let proxy = MetalDisplayLinkProxy { [weak self] update in
+            MainActor.assumeIsolated { self?.step(update) }
+        }
+        let link = CAMetalDisplayLink(metalLayer: layer)
+        link.delegate = proxy
+        link.preferredFrameLatency = 1
+        if let screen = NSScreen.builtIn {
+            let fastest = Float(screen.maximumFramesPerSecond)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: fastest, preferred: fastest)
+        }
         link.add(to: .main, forMode: .common)
         lastFrameTime = CACurrentMediaTime()
         displayLink = link
+        displayLinkProxy = proxy
     }
 
     private func stopDisplayLink() {
         displayLink?.invalidate()
         displayLink = nil
+        displayLinkProxy = nil
     }
 
-    @objc private func step(_ link: CADisplayLink) {
-        let now = CACurrentMediaTime()
-        let rawInterval = now - lastFrameTime
+    private func step(_ update: CAMetalDisplayLink.Update) {
+        // Everything is placed for the moment this frame lights up, not for
+        // now: the lid and the head keep moving in between.
+        let shown = update.targetPresentationTimestamp
+        let rawInterval = shown - lastFrameTime
         let dt = min(max(rawInterval, 1.0 / 240), 1.0 / 20)
-        lastFrameTime = now
+        lastFrameTime = shown
         if let frame = streamer.newFrame() {
             overlay.absorb(frame)
         }
-        let target = isClosingOut ? preferences.thresholdAngle : rawAngle
-        visualAngle.advance(to: target, dt: dt)
-        advanceEye(now: now, dt: dt)
+        let predicted = anglePredictor.angle(at: shown) ?? rawAngle
+        let target = isClosingOut ? preferences.thresholdAngle : predicted
+        advanceVisualAngle(to: target, dt: dt)
+        advanceEye(now: shown, dt: dt)
 
         guard isClosingOut else {
-            applyVisual(angle: visualAngle.value)
+            applyVisual(angle: visualAngle.value, drawable: update.drawable)
             return
         }
         // At or above the threshold the picture is already flat, so a lid
         // that opened past it finishes at once.
         let settled = visualAngle.value >= target - Self.closingOutSettleEpsilon
-        let timedOut = now - closingOutStartedAt > Self.closingOutMaxDuration
+        let timedOut = CACurrentMediaTime() - closingOutStartedAt > Self.closingOutMaxDuration
         guard settled || timedOut else {
-            applyVisual(angle: visualAngle.value)
+            applyVisual(angle: visualAngle.value, drawable: update.drawable)
             return
         }
         // The frame that fades out must match the screen behind it exactly,
         // so land on the threshold itself rather than just short of it.
         visualAngle.reset(to: target)
-        applyVisual(angle: target)
+        applyVisual(angle: target, drawable: update.drawable)
         finishClosingOut()
     }
 
+    /// A stiff spring needs sub-steps to stay stable through a slow frame.
+    private func advanceVisualAngle(to target: Double, dt: Double) {
+        let substeps = max(Int((visualAngle.frequency * dt / 0.5).rounded(.up)), 1)
+        for _ in 0..<substeps {
+            visualAngle.advance(to: target, dt: dt / Double(substeps))
+        }
+    }
+
     /// The geometry takes the lid angle itself, so only the blur saturates.
-    private func applyVisual(angle: Double) {
+    private func applyVisual(angle: Double, drawable: CAMetalDrawable? = nil) {
         let progress = blurProgress(for: angle)
-        overlay.update(progress: progress, currentAngle: angle, eye: viewpoint.eye, tuning: tuning)
+        overlay.update(progress: progress, currentAngle: angle, eye: viewpoint.eye, tuning: tuning, drawable: drawable)
     }
 
     private var tuning: DepthTuning {
@@ -731,14 +766,20 @@ final class LidController: ObservableObject {
         room.centredEye(startAngle: preferences.thresholdAngle, viewingDistance: preferences.viewingDistance)
     }
 
-    /// A new run starts with the eye centred; the first face found glides it
-    /// over.
+    /// A new run starts where the head was last seen, if that was recent:
+    /// people sit in the same place, and the camera needs a moment to start.
+    /// Otherwise it starts centred. Either way the first face found glides
+    /// the eye over.
     private func beginViewpoint() {
         let geometry = NSScreen.builtIn?.lidGeometry
         room = geometry
-        if let geometry {
-            viewpoint.reset(to: centredEye(in: geometry))
+        guard let geometry else { return }
+        var start = centredEye(in: geometry)
+        if followsFace, let remembered = lastTrackedEye,
+           CACurrentMediaTime() - remembered.time < Self.rememberedEyeLifetime {
+            start = remembered.position
         }
+        viewpoint.reset(to: start)
     }
 
     /// Starts the camera once the lid is past the start angle and keeps it
@@ -764,6 +805,9 @@ final class LidController: ObservableObject {
 
     private func stopCamera() {
         guard isCameraRunning else { return }
+        if viewpoint.isFollowingFace {
+            lastTrackedEye = (viewpoint.eye, CACurrentMediaTime())
+        }
         isCameraRunning = false
         faceTracker.stop()
         faceTracker.setSearchHint(nil)
@@ -821,6 +865,8 @@ final class LidController: ObservableObject {
         if status != trackingStatus { trackingStatus = status }
     }
 
+    /// How long a remembered head position is trusted, in seconds.
+    private static let rememberedEyeLifetime: Double = 15 * 60
     /// A face box older than this is not used, in seconds.
     private static let faceFreshness: Double = 0.5
     /// The search region around the predicted face, as a multiple of its size.
@@ -887,11 +933,26 @@ final class LidController: ObservableObject {
         wasTimeoutEnabled = false
         isClosingOut = false
         angleHistory.reset()
+        anglePredictor.reset()
         refreshCameraAuthorization()
         if let angle = sensor.angle() {
             rawAngle = angle
             visualAngle.reset(to: angle)
         }
         setPollInterval(Self.idlePollInterval)
+    }
+}
+
+/// `CAMetalDisplayLink` wants an Objective-C delegate; this forwards its
+/// callbacks, which arrive on the run loop the link was added to.
+private final class MetalDisplayLinkProxy: NSObject, CAMetalDisplayLinkDelegate {
+    private let handler: (CAMetalDisplayLink.Update) -> Void
+
+    init(handler: @escaping (CAMetalDisplayLink.Update) -> Void) {
+        self.handler = handler
+    }
+
+    func metalDisplayLink(_ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update) {
+        handler(update)
     }
 }

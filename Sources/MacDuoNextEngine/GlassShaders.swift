@@ -5,11 +5,16 @@ import Foundation
 /// Every drawable pixel is a point on the real screen, which the lid carries
 /// through the room. The kernel casts a ray from the eye through that point
 /// and follows it into the held picture: a display panel under a pane of
-/// frosted cover glass, standing where the screen stood when the effect began.
+/// frosted cover glass, set into an endless black plane that stands where the
+/// screen stood when the effect began. The real display folds away from it
+/// like a film peeled off the front.
 ///
-/// Cost is kept where it shows. Across the flat middle of the pane the ray
-/// meets two parallel planes, solved in closed form. Only in the thin band
-/// around the rounded edge, where the glass curves, does the ray go to the
+/// Cost is kept where it shows. `glassKernel` runs for every pixel and holds
+/// no ray tracing code, so it keeps a small register footprint and full
+/// occupancy: across the flat middle of the pane the ray meets two parallel
+/// planes, solved in closed form. Pixels whose ray lands in the thin band
+/// around the rounded edge are appended to a list, and `edgeKernel`, a
+/// second, indirect dispatch over only that list, follows them into the
 /// acceleration structure (`USE_RAYTRACING`), which Apple silicon from M3 on
 /// walks in hardware. Without ray tracing the band uses an analytic box.
 ///
@@ -44,7 +49,7 @@ enum GlassShaders {
         float4 dim;               // hinge floor, strength, reach, max dim
         float4 slab;              // glass bounds in plan: min x, min y, max x, max y
         float4 glass;             // thickness, index of refraction, environment strength, corner radius
-        float4 frost;             // amount, max frost radius in pixels, edge radius, unused
+        float4 frost;             // amount, max frost radius in pixels, edge radius, edge list capacity
         float4 keyLight;          // world direction to the key light, intensity
     };
 
@@ -57,14 +62,19 @@ enum GlassShaders {
     #if USE_RAYTRACING
     #define SCENE_PARAMS , primitive_acceleration_structure accel, const device packed_float3 *normals, const device uint *indices
     #define SCENE_PASS , accel, normals, indices
-    #define KERNEL_SCENE , primitive_acceleration_structure accel [[buffer(1)]], const device packed_float3 *normals [[buffer(2)]], const device uint *indices [[buffer(3)]]
+    #define KERNEL_SCENE , primitive_acceleration_structure accel [[buffer(3)]], const device packed_float3 *normals [[buffer(4)]], const device uint *indices [[buffer(5)]]
     #else
     #define SCENE_PARAMS
     #define SCENE_PASS
     #define KERNEL_SCENE
     #endif
 
-    constant float goldenAngle = 2.39996323;
+    // Eight points spread over the unit disc on a golden-angle spiral.
+    constant float2 spiral[8] = {
+        float2( 0.2500,  0.0000), float2(-0.3193,  0.2925), float2( 0.0489, -0.5569),
+        float2( 0.4024,  0.5249), float2(-0.7385, -0.1306), float2( 0.6996, -0.4450),
+        float2(-0.2340,  0.8705), float2(-0.4463, -0.8593)
+    };
     constant float3 absorption = float3(0.0040, 0.0012, 0.0030);  // per point: a faint green in long paths
 
     static float3 toModel(constant GlassUniforms &u, float3 p) {
@@ -126,11 +136,12 @@ enum GlassShaders {
             float spread = radius / scale;
             float lod = clamp(log2(max(radius * 0.35, 1.0)), 0.0, u.blur.w);
             float turn = 6.2831853 * gradientNoise(floor(point * scale));
+            float2 rotation = float2(cos(turn), sin(turn)) * spread;
             colour = float3(0.0);
             for (int tap = 0; tap < 8; ++tap) {
-                float r = spread * sqrt((float(tap) + 0.5) / 8.0);
-                float a = float(tap) * goldenAngle + turn;
-                colour += sampleAt(u, picture, point + r * float2(cos(a), sin(a)), lod);
+                float2 o = spiral[tap];
+                float2 offset = float2(o.x * rotation.x - o.y * rotation.y, o.x * rotation.y + o.y * rotation.x);
+                colour += sampleAt(u, picture, point + offset, lod);
             }
             colour *= 0.125;
         }
@@ -280,13 +291,8 @@ enum GlassShaders {
         return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, 12.92 * c, c <= 0.0031308);
     }
 
-    kernel void glassKernel(texture2d<float, access::write> output [[texture(0)]],
-                            texture2d<float> picture [[texture(1)]],
-                            constant GlassUniforms &u [[buffer(0)]]
-                            KERNEL_SCENE,
-                            uint2 gid [[thread_position_in_grid]]) {
-        if (gid.x >= output.get_width() || gid.y >= output.get_height()) { return; }
-
+    // The ray from the eye through one drawable pixel, in model space.
+    static void primaryRay(constant GlassUniforms &u, uint2 gid, thread float3 &origin, thread float3 &direction) {
         // Pixels run down from the top; points run up from the bottom.
         float scale = u.lidOriginAndScale.w;
         float2 screenPoint = float2((float(gid.x) + 0.5) / scale,
@@ -295,8 +301,27 @@ enum GlassShaders {
                      + float3(screenPoint.x, 0.0, 0.0)
                      + u.lidAxisY.xyz * screenPoint.y;
         float3 eye = u.eyeAndGlass.xyz;
-        float3 origin = toModel(u, eye);
-        float3 direction = normalize(toModelDirection(u, normalize(onLid - eye)));
+        origin = toModel(u, eye);
+        direction = normalize(toModelDirection(u, normalize(onLid - eye)));
+    }
+
+    static void writePixel(texture2d<float, access::write> output, uint2 gid, float3 colour) {
+        // Triangular dither of one 8-bit step, so gradients do not band.
+        float2 pixel = float2(gid);
+        float dither = (gradientNoise(pixel) + hash12(pixel + 17.0) - 1.0) / 255.0;
+        output.write(float4(saturate(encodeSRGB(colour) + dither), 1.0), gid);
+    }
+
+    kernel void glassKernel(texture2d<float, access::write> output [[texture(0)]],
+                            texture2d<float> picture [[texture(1)]],
+                            constant GlassUniforms &u [[buffer(0)]],
+                            device atomic_uint *edgeCount [[buffer(1)]],
+                            device uint2 *edgePixels [[buffer(2)]],
+                            uint2 gid [[thread_position_in_grid]]) {
+        if (gid.x >= output.get_width() || gid.y >= output.get_height()) { return; }
+        float3 origin;
+        float3 direction;
+        primaryRay(u, gid, origin, direction);
 
         float glassAmount = u.eyeAndGlass.w;
         float frost = u.frost.x;
@@ -326,18 +351,51 @@ enum GlassShaders {
                     float3 reflection = sky(u, reflect(direction, float3(0.0, 0.0, 1.0)), frost) * u.glass.z;
                     colour = through * (1.0 - fresnel) + reflection * fresnel;
                 } else if (edge < band) {
-                    float3 traced = traceEdge(u, picture, origin, direction, straightPoint, frost SCENE_PASS);
-                    float3 straight = frostedPicture(u, picture, straightPoint, 0.0);
-                    colour = mix(straight, traced, glassAmount);
+                    // The rolled edge: leave it to the edge pass, which
+                    // overwrites this pixel. The straight picture stands in
+                    // if the list is full.
+                    uint slot = atomic_fetch_add_explicit(edgeCount, 1, memory_order_relaxed);
+                    if (slot < uint(u.frost.w)) { edgePixels[slot] = gid; }
+                    colour = frostedPicture(u, picture, straightPoint, frost);
+                } else {
+                    // Beyond the glass: the black plane the panel was left on,
+                    // standing at the start angle and running on without end.
+                    // It is lacquer black and shows only by what it reflects.
+                    float sheen = schlick(-direction.z, 0.045) * glassAmount * u.glass.z;
+                    colour = sky(u, reflect(direction, float3(0.0, 0.0, 1.0)), 0.7) * sheen;
                 }
-                // Beyond the band the ray misses the glass: the dark room.
             }
         }
+        writePixel(output, gid, colour);
+    }
 
-        // Triangular dither of one 8-bit step, so gradients do not band.
-        float2 pixel = float2(gid);
-        float dither = (gradientNoise(pixel) + hash12(pixel + 17.0) - 1.0) / 255.0;
-        output.write(float4(saturate(encodeSRGB(colour) + dither), 1.0), gid);
+    // Turns the edge count into an indirect dispatch of 64-thread groups.
+    kernel void edgeArguments(device const uint *edgeCount [[buffer(1)]],
+                              device uint *arguments [[buffer(6)]],
+                              constant GlassUniforms &u [[buffer(0)]]) {
+        uint count = min(edgeCount[0], uint(u.frost.w));
+        arguments[0] = (count + 63) / 64;
+        arguments[1] = 1;
+        arguments[2] = 1;
+    }
+
+    kernel void edgeKernel(texture2d<float, access::write> output [[texture(0)]],
+                           texture2d<float> picture [[texture(1)]],
+                           constant GlassUniforms &u [[buffer(0)]],
+                           device const uint *edgeCount [[buffer(1)]],
+                           device const uint2 *edgePixels [[buffer(2)]]
+                           KERNEL_SCENE,
+                           uint index [[thread_position_in_grid]]) {
+        if (index >= min(edgeCount[0], uint(u.frost.w))) { return; }
+        uint2 gid = edgePixels[index];
+        float3 origin;
+        float3 direction;
+        primaryRay(u, gid, origin, direction);
+        float2 straightPoint = (origin + direction * (-origin.z / direction.z)).xy;
+        float frost = u.frost.x;
+        float3 traced = traceEdge(u, picture, origin, direction, straightPoint, frost SCENE_PASS);
+        float3 straight = frostedPicture(u, picture, straightPoint, 0.0);
+        writePixel(output, gid, mix(straight, traced, u.eyeAndGlass.w));
     }
     """
 }

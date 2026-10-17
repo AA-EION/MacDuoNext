@@ -318,3 +318,41 @@ struct OneEuroFilterTests {
         #expect(abs(output - 590) < 60)
     }
 }
+
+struct LidAnglePredictorTests {
+    @Test
+    func testCarriesAMovingLidForward() throws {
+        var predictor = LidAnglePredictor()
+        // A lid closing at 50°/s, read by a sensor that refreshes at 10 Hz
+        // and polled at 60 Hz.
+        var time = 0.0
+        while time < 0.5 {
+            let sensed = 100 - 50 * (floor(time * 10) / 10)
+            predictor.record(angle: sensed, at: time)
+            time += 1.0 / 60
+        }
+        let predicted = try #require(predictor.angle(at: 0.55))
+        // The truth at 0.55 s is 72.5°; the last reading says 80°.
+        #expect(abs(predicted - 72.5) < 2.5)
+        #expect(abs(predictor.velocity(at: 0.5) + 50) < 5)
+    }
+
+    @Test
+    func testAStillLidIsNotExtrapolated() throws {
+        var predictor = LidAnglePredictor()
+        predictor.record(angle: 90, at: 0)
+        predictor.record(angle: 85, at: 0.1)
+        #expect(predictor.velocity(at: 1) == 0)
+        #expect(try #require(predictor.angle(at: 1)) == 85)
+    }
+
+    @Test
+    func testLeadIsCapped() throws {
+        var predictor = LidAnglePredictor()
+        predictor.record(angle: 90, at: 0)
+        predictor.record(angle: 80, at: 0.1)
+        // 100°/s, but never more than 0.15 s ahead of the last change.
+        let predicted = try #require(predictor.angle(at: 0.2))
+        #expect(predicted >= 80 - 100 * 0.15 - 1e-9)
+    }
+}

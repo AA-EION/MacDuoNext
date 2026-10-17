@@ -234,6 +234,16 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
 
     // MARK: - Frames
 
+    /// A face cut off by the edge of the frame has a box too small for its
+    /// distance and off-centre, so it would place the eye wrongly. As the lid
+    /// comes down the face leaves the frame at the bottom; such a box counts
+    /// as no face, and the eye holds and then returns to the centre.
+    private static func isClipped(_ face: FaceSighting) -> Bool {
+        let margin = 0.01
+        return face.x < margin || face.y < margin
+            || face.x + face.width > 1 - margin || face.y + face.height > 1 - margin
+    }
+
     /// Called on the frame queue only.
     private func recordStats(detection: Double) {
         let now = CACurrentMediaTime()
@@ -294,12 +304,10 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
         lock.lock()
         frameCount += 1
         frameSize = (width, height)
-        if let face {
-            faceCount += 1
-            missesInHint = 0
-            // Boxes come back relative to the region searched.
+        // Boxes come back relative to the region searched.
+        let sighting = face.map { face in
             let box = face.boundingBox
-            newest = FaceSighting(
+            return FaceSighting(
                 x: Double(region.minX + box.minX * region.width),
                 y: Double(region.minY + box.minY * region.height),
                 width: Double(box.width * region.width),
@@ -308,6 +316,11 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
                 imageHeight: height,
                 timestamp: captured
             )
+        }
+        if let sighting, !Self.isClipped(sighting) {
+            faceCount += 1
+            missesInHint = 0
+            newest = sighting
         } else if hint != nil {
             missesInHint += 1
         } else {

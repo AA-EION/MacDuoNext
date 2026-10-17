@@ -60,8 +60,9 @@ public struct GlassFrame: Equatable {
 
 /// The 3D engine behind the overlay.
 ///
-/// One compute pass traces the room for every drawable pixel and writes the
-/// drawable directly, already encoded and dithered. The picture sits
+/// One compute pass draws every drawable pixel, already encoded and dithered,
+/// straight into the drawable; a second, indirect pass ray traces only the
+/// pixels the first one found on the glass's rounded edge. The picture sits
 /// on a black margin in one texture with a Gaussian pyramid over it, so blur
 /// is a single trilinear sample at any radius.
 ///
@@ -122,6 +123,14 @@ public final class GlassRenderer {
     nonisolated private let device: MTLDevice
     nonisolated private let queue: MTLCommandQueue
     private let tracer: MTLComputePipelineState
+    private let edgeArguments: MTLComputePipelineState
+    private let edgeTracer: MTLComputePipelineState
+    /// The edge list: a counter, the pixels, and the indirect dispatch.
+    private var edgeCount: MTLBuffer?
+    private var edgePixels: MTLBuffer?
+    private var edgeDispatch: MTLBuffer?
+    private var edgeCapacity = 0
+    private let timing = FrameTiming()
     /// True when the tracer walks an acceleration structure.
     public let tracesRays: Bool
     /// True on GPUs with ray tracing hardware (Apple family 9: M3 and later).
@@ -178,12 +187,17 @@ public final class GlassRenderer {
         if library == nil {
             library = Self.compile(device: device, rayTracing: false)
         }
-        guard let library, let kernel = library.makeFunction(name: "glassKernel") else {
+        guard let library,
+              let kernel = library.makeFunction(name: "glassKernel"),
+              let arguments = library.makeFunction(name: "edgeArguments"),
+              let edge = library.makeFunction(name: "edgeKernel") else {
             EngineLog.render.error("glass shaders unavailable")
             return nil
         }
         do {
             tracer = try device.makeComputePipelineState(function: kernel)
+            edgeArguments = try device.makeComputePipelineState(function: arguments)
+            edgeTracer = try device.makeComputePipelineState(function: edge)
         } catch {
             EngineLog.render.error("metal pipeline failed: \(String(describing: error), privacy: .public)")
             return nil
@@ -228,12 +242,10 @@ public final class GlassRenderer {
         // every window behind it as hidden, and apps stop drawing. The shader
         // writes alpha 1 everywhere, so blending gives the same picture.
         target.isOpaque = false
-        // Waiting for the refresh here blocks the main thread. While a capture
-        // stream leaves this app out of its own picture, the window server
-        // draws the screen twice, the drawable comes back late, and the wait
-        // lands a refresh later: 60 frames per second becomes 32. The display
-        // link already paces the drawing.
-        target.displaySyncEnabled = false
+        // Presented in step with the refresh, so frames never tear. The
+        // overlay draws from a CAMetalDisplayLink, which hands drawables over
+        // when they are free, so this never blocks the main thread.
+        target.displaySyncEnabled = true
         target.needsDisplayOnBoundsChange = true
     }
 
@@ -532,12 +544,14 @@ public final class GlassRenderer {
         texture = nil
     }
 
-    /// Draws one frame.
-    public func render(_ frame: GlassFrame) {
+    /// Draws one frame into `drawable`, or into the layer's next drawable.
+    public func render(_ frame: GlassFrame, drawable given: CAMetalDrawable? = nil) {
         guard let commands = queue.makeCommandBuffer() else { return }
         absorbPending(into: commands)
         guard let texture, screenSize.width > 0, screenSize.height > 0,
-              let drawable = layer.nextDrawable() else {
+              let drawable = given ?? layer.nextDrawable(),
+              prepareEdgeList(width: drawable.texture.width, height: drawable.texture.height),
+              let edgeCount, let edgePixels, let edgeDispatch else {
             commands.commit()
             return
         }
@@ -579,38 +593,119 @@ public final class GlassRenderer {
                 Float(min(max(frame.frost, 0), 1)),
                 Float(Self.maxFrostRadiusInPoints * pixelScale),
                 Float(shape?.edgeRadius ?? 0),
-                0
+                Float(edgeCapacity)
             ),
             keyLight: SIMD4(Float(keyLight.x), Float(keyLight.y), Float(keyLight.z), 1.6)
         )
 
+        guard let clear = commands.makeBlitCommandEncoder() else {
+            commands.commit()
+            return
+        }
+        clear.fill(buffer: edgeCount, range: 0..<4, value: 0)
+        clear.endEncoding()
+
+        // Serial dispatch: each pass sees the writes of the one before.
         guard let compute = commands.makeComputeCommandEncoder() else {
             commands.commit()
             return
         }
-        compute.setComputePipelineState(tracer)
         compute.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-        if tracesRays {
-            // The ray-traced kernel always declares these buffers.
-            guard let scene, let structure = scene.accelerationStructure else {
-                compute.endEncoding()
-                commands.commit()
-                return
-            }
-            compute.setAccelerationStructure(structure, bufferIndex: 1)
-            compute.setBuffer(scene.normals, offset: 0, index: 2)
-            compute.setBuffer(scene.indices, offset: 0, index: 3)
-        }
+        compute.setBuffer(edgeCount, offset: 0, index: 1)
+        compute.setBuffer(edgePixels, offset: 0, index: 2)
         compute.setTexture(target, index: 0)
         compute.setTexture(texture, index: 1)
+
+        compute.setComputePipelineState(tracer)
         let threadWidth = tracer.threadExecutionWidth
         let threadHeight = max(tracer.maxTotalThreadsPerThreadgroup / threadWidth, 1)
         compute.dispatchThreads(
             MTLSize(width: target.width, height: target.height, depth: 1),
             threadsPerThreadgroup: MTLSize(width: threadWidth, height: threadHeight, depth: 1)
         )
+
+        if glassAmount > 0.001 {
+            compute.setComputePipelineState(edgeArguments)
+            compute.setBuffer(edgeDispatch, offset: 0, index: 6)
+            compute.dispatchThreadgroups(
+                MTLSize(width: 1, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+            )
+
+            var bound = true
+            if tracesRays {
+                if let scene, let structure = scene.accelerationStructure {
+                    compute.setAccelerationStructure(structure, bufferIndex: 3)
+                    compute.setBuffer(scene.normals, offset: 0, index: 4)
+                    compute.setBuffer(scene.indices, offset: 0, index: 5)
+                } else {
+                    bound = false
+                }
+            }
+            if bound {
+                compute.setComputePipelineState(edgeTracer)
+                compute.dispatchThreadgroups(
+                    indirectBuffer: edgeDispatch,
+                    indirectBufferOffset: 0,
+                    threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1)
+                )
+            }
+        }
         compute.endEncoding()
         commands.present(drawable)
+        let timing = self.timing
+        commands.addCompletedHandler { buffer in
+            timing.record(gpuSeconds: buffer.gpuEndTime - buffer.gpuStartTime)
+        }
         commands.commit()
+    }
+
+    /// Sizes the edge list for a drawable: an eighth of its pixels, far more
+    /// than the edge band covers even with the lid nearly shut.
+    private func prepareEdgeList(width: Int, height: Int) -> Bool {
+        let capacity = max(width * height / 8, 1024)
+        if edgeCapacity == capacity, edgeCount != nil { return true }
+        edgeCount = device.makeBuffer(length: 4, options: .storageModePrivate)
+        edgePixels = device.makeBuffer(length: capacity * 8, options: .storageModePrivate)
+        edgeDispatch = device.makeBuffer(length: 12, options: .storageModePrivate)
+        edgeCapacity = capacity
+        return edgeCount != nil && edgePixels != nil && edgeDispatch != nil
+    }
+}
+
+/// GPU time per frame, logged every few seconds while drawing.
+private final class FrameTiming: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames = 0
+    private var total: Double = 0
+    private var worst: Double = 0
+    private var since = CACurrentMediaTime()
+
+    func record(gpuSeconds: Double) {
+        guard gpuSeconds > 0, gpuSeconds < 1 else { return }
+        lock.lock()
+        frames += 1
+        total += gpuSeconds
+        worst = max(worst, gpuSeconds)
+        let now = CACurrentMediaTime()
+        let span = now - since
+        guard span >= 5 else {
+            lock.unlock()
+            return
+        }
+        let count = frames
+        let average = total / Double(frames) * 1000
+        let peak = worst * 1000
+        frames = 0
+        total = 0
+        worst = 0
+        since = now
+        lock.unlock()
+        EngineLog.render.notice(
+            """
+            gpu \(average, format: .fixed(precision: 2)) ms average, \(peak, format: .fixed(precision: 2)) ms worst, \
+            \(Double(count) / span, format: .fixed(precision: 1)) frames per second
+            """
+        )
     }
 }

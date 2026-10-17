@@ -74,6 +74,8 @@ final class GlassOverlay {
     var isVisible: Bool { window != nil }
     var isPictureReady: Bool { renderer?.isReady ?? false }
     var hostWindow: NSWindow? { window }
+    /// The layer the current window draws into, for the display link.
+    var metalLayer: CAMetalLayer? { window == nil ? nil : renderer?.layer }
     /// The room for the current run.
     var roomGeometry: LidGeometry { geometry }
     var renderPath: String { renderer?.pathDescription ?? "unavailable" }
@@ -257,7 +259,13 @@ final class GlassOverlay {
     }
 
     /// Draws the room with the lid at `currentAngle` and the eye at `eye`.
-    func update(progress: Double, currentAngle: Double, eye: Vector3, tuning: DepthTuning) {
+    func update(
+        progress: Double,
+        currentAngle: Double,
+        eye: Vector3,
+        tuning: DepthTuning,
+        drawable: CAMetalDrawable? = nil
+    ) {
         guard let renderer, renderer.isReady else { return }
         self.tuning = tuning
         let pictureAngle = geometry.pictureAngle(
@@ -292,7 +300,7 @@ final class GlassOverlay {
         )
         guard frame != lastFrame || renderer.hasPendingPicture || !hasRevealed else { return }
         lastFrame = frame
-        renderer.render(frame)
+        renderer.render(frame, drawable: drawable)
     }
 
     /// Progress at which the glass is fully in.

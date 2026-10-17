@@ -37,12 +37,15 @@ final class Preferences: ObservableObject {
         Key.isTimeoutEnabled: false,
         Key.thresholdAngle: 90.0,
         Key.blurSpan: 60.0,
-        Key.maxBlurRadius: 135.0,
-        Key.maxDim: 1.0,
-        Key.viewingDistance: 6.0,
+        Key.maxBlurRadius: 60.0,
+        // Enough to sink the far edge, never enough to put the picture out.
+        Key.maxDim: 0.35,
+        // About 50 cm from a 14-inch panel: where people sit, so the
+        // picture looks fixed even before the camera has found the face.
+        Key.viewingDistance: 2.6,
         Key.recession: 1.0,
         Key.blurEvenness: 0.0,
-        Key.dimReach: 0.5,
+        Key.dimReach: 0.9,
         Key.showsAngleInMenuBar: false,
         Key.isLivePicture: true,
         Key.isHeadTrackingEnabled: true,
