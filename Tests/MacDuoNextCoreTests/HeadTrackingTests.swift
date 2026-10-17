@@ -135,7 +135,7 @@ struct EyeEstimatorTests {
     func testPredictedBoxRoundTrips() throws {
         let eye = Vector3(60, -40, 600)
         let box = try #require(estimator.predictedBox(eye: eye, imageWidth: 1280, imageHeight: 720))
-        let face = FaceObservation(
+        let face = FaceSighting(
             x: box.x, y: box.y, width: box.width, height: box.height,
             imageWidth: 1280, imageHeight: 720, timestamp: 0
         )
@@ -155,9 +155,9 @@ struct EyeEstimatorTests {
 
     @Test
     func testImplausibleBoxesAreRejected() {
-        let tiny = FaceObservation(x: 0.5, y: 0.5, width: 0.011, height: 0.02, imageWidth: 640, imageHeight: 480, timestamp: 0)
+        let tiny = FaceSighting(x: 0.5, y: 0.5, width: 0.011, height: 0.02, imageWidth: 640, imageHeight: 480, timestamp: 0)
         #expect(estimator.eye(for: tiny) == nil)
-        let huge = FaceObservation(x: 0, y: 0, width: 1, height: 1, imageWidth: 640, imageHeight: 480, timestamp: 0)
+        let huge = FaceSighting(x: 0, y: 0, width: 1, height: 1, imageWidth: 640, imageHeight: 480, timestamp: 0)
         #expect(estimator.eye(for: huge) == nil)
     }
 

@@ -1,7 +1,7 @@
 import Foundation
 
 /// One face the detector found in one camera frame.
-public struct FaceObservation: Equatable, Sendable {
+public struct FaceSighting: Equatable, Sendable {
     /// Normalised bounding box, origin at the bottom left of the picture, as
     /// Vision reports it.
     public var x: Double
@@ -49,7 +49,7 @@ public struct EyeEstimator: Equatable {
 
     /// Camera space in millimetres: x right of the picture, y up, z away from
     /// the lens. `nil` for a box that cannot be a face at a usable distance.
-    public func eye(for face: FaceObservation) -> Vector3? {
+    public func eye(for face: FaceSighting) -> Vector3? {
         guard face.width > 0.01, face.imageWidth > 0, face.imageHeight > 0 else { return nil }
         let aspect = face.imageWidth / face.imageHeight
         let crop = min(aspect / (16.0 / 9.0), 1)

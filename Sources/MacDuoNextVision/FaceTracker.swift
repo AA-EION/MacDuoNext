@@ -50,7 +50,7 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     private var wantsRunning = false
 
     private let lock = NSLock()
-    private var newest: FaceObservation?
+    private var newest: FaceSighting?
     private var frameCount = 0
     private var faceCount = 0
     private var searchHint: NormalisedRect?
@@ -69,7 +69,7 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     /// Pins every stage of the request to the Neural Engine where there is
     /// one. Intel Macs have none and keep Vision's own choice.
     private func preferNeuralEngine() {
-        guard let stages = try? request.supportedComputeStageDevices() else { return }
+        guard let stages = try? request.supportedComputeStageDevices else { return }
         for (stage, devices) in stages {
             let neural = devices.first { device in
                 if case .neuralEngine = device { return true }
@@ -160,7 +160,7 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     }
 
     /// The newest face, if one has been seen since the camera started.
-    public func latestFace() -> FaceObservation? {
+    public func latestFace() -> FaceSighting? {
         lock.lock()
         defer { lock.unlock() }
         return newest
@@ -252,7 +252,7 @@ public final class FaceTracker: NSObject, AVCaptureVideoDataOutputSampleBufferDe
             missesInHint = 0
             // Boxes come back relative to the region searched.
             let box = face.boundingBox
-            newest = FaceObservation(
+            newest = FaceSighting(
                 x: Double(region.minX + box.minX * region.width),
                 y: Double(region.minY + box.minY * region.height),
                 width: Double(box.width * region.width),
